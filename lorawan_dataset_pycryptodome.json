@@ -1,0 +1,26 @@
+[
+  {
+    "timestamp": "2025-07-08T10:51:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -88,
+    "snr": 7.0,
+    "raw_payload": "40DA1A0B260001000A89C075777608709AF1"
+  },
+  {
+    "timestamp": "2025-07-08T10:52:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -86,
+    "snr": 6.5,
+    "raw_payload": "40DA1A0B260002000A9672E664782FCD93B7"
+  },
+  {
+    "timestamp": "2025-07-08T10:53:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -84,
+    "snr": 6.0,
+    "raw_payload": "40DA1A0B260003000A9AC7570E8AA428126C"
+  }
+]

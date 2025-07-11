@@ -1,0 +1,3 @@
+raw_payload,rssi,snr,error
+403B1A2C000100003A010E5F5E01,-90,7.5,MIC validation failed
+403B1A2C000200013B020F605F02,-85,8.0,Missing FPort/FRMPayload
