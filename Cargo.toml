@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# CLI argument parsing
+clap = { version = "4.0", features = ["derive"] }
+hex = "0.4"
+
 # ChaCha20-Poly1305 AEAD
 chacha20poly1305 = "0.10"
+chacha20 = "0.9"  # For direct ChaCha20 access
 
 # AES-GCM AEAD
 aes-gcm = "0.10"

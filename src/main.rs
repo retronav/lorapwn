@@ -1,31 +1,24 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(any(test, feature = "std")), no_main)]
 
-mod aead_crypto;
-mod lorawan_parser;
-mod simulation;
-mod debug;
-mod crypto_benchmark;
-mod performance_analysis;
-mod packet_format;
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
 #[cfg(not(any(test, feature = "std")))]
 use panic_halt as _;
 
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+// Import the library
+use lorapwn;
+
+#[cfg(feature = "std")]
+use clap::Parser;
+
+#[cfg(feature = "std")]
+use lorapwn::cli::{Args, Mode, perform_profiling_mode, perform_target_mode};
 
 #[cfg(test)]
 mod tests {
-    use crate::lorawan_parser::AeadLorawanPacket;
+    use lorapwn::{AeadLorawanPacket, CHACHA20_TAG_SIZE};
 
     #[cfg(feature = "std")]
     use std::vec::Vec;
-
-    const CHACHA20_TAG_SIZE: usize = 16;
 
     #[test]
     fn test_chacha20_aead_encryption_decryption() {
@@ -68,30 +61,40 @@ fn main() -> ! {
 
 #[cfg(feature = "std")]
 fn main() {
-    println!("🔐 LoraPwn: LoRaWAN Security Research & Sniffing Toolkit");
-    println!("Version 0.1.0 - Comprehensive Cryptographic Analysis");
-    println!("Author: HimuCodes - Advanced LoRaWAN Security Research");
-    println!("═══════════════════════════════════════════════════════════\n");
+    let args = Args::parse();
 
-    // Show packet format comparison
-    packet_format::print_packet_format_comparison();
-    packet_format::generate_packet_diagrams();
+    let result = match args.mode {
+        Mode::Profiling => {
+            let key = match args.key {
+                Some(k) => k,
+                None => {
+                    eprintln!("Error: --key is required for profiling mode");
+                    std::process::exit(1);
+                }
+            };
+            let input = match args.input {
+                Some(i) => i,
+                None => {
+                    eprintln!("Error: --input is required for profiling mode");
+                    std::process::exit(1);
+                }
+            };
+            perform_profiling_mode(&key, &input, &args.stage, args.verbose)
+        }
+        Mode::Target => {
+            let input = match args.input {
+                Some(i) => i,
+                None => {
+                    eprintln!("Error: --input is required for target mode");
+                    std::process::exit(1);
+                }
+            };
+            perform_target_mode(&input, &args.stage, args.verbose)
+        }
+    };
 
-    // Debug packet structure
-    debug::debug_packet_structure();
-
-    // Run simulation tests
-    simulation::run_simulation();
-
-    // Run simple performance analysis
-    performance_analysis::run_simple_performance_test();
-
-    println!("\n🎯 RESEARCH CONCLUSIONS");
-    println!("═══════════════════════════════════════════════════════════");
-    println!("✅ ChaCha20-Poly1305 successfully implemented for LoRaWAN");
-    println!("✅ 4x stronger authentication security (128-bit vs 32-bit)");
-    println!("✅ AEAD provides unified encryption + authentication");
-    println!("✅ Performance competitive with traditional methods");
-    println!("✅ Resistance to timing attacks and modern cryptanalysis");
-    println!("\n📊 Run 'cargo bench' for detailed Criterion benchmarks");
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
 }
