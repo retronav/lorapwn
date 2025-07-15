@@ -1,0 +1,39 @@
+[package]
+name = "lorapwn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# ChaCha20-Poly1305 AEAD
+chacha20poly1305 = "0.10"
+
+# AES-GCM AEAD
+aes-gcm = "0.10"
+
+# AES-CTR + CMAC (traditional LoRaWAN)
+aes = "0.8"
+cmac = "0.7"
+ctr = "0.9"
+
+# Utilities
+rand = "0.9.1"
+
+[dev-dependencies]
+criterion = { version = "0.6.0", features = ["html_reports"] }
+rand = "0.9.1"  # Also needed for benchmarks
+
+[features]
+default = ["std"]
+std = []
+
+[[bench]]
+name = "crypto_benchmark"
+harness = false
+
+[lib]
+name = "lorapwn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lorapwn"
+path = "src/main.rs"
