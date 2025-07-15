@@ -9,6 +9,8 @@ extern crate alloc;
 // Core library modules (now in lib/ directory)
 #[path = "../lib/aead_crypto.rs"]
 pub mod aead_crypto;
+#[path = "../lib/lorawan_aes.rs"]
+pub mod lorawan_aes;
 #[path = "../lib/lorawan_parser.rs"]
 pub mod lorawan_parser;
 #[path = "../lib/simulation.rs"]
@@ -28,6 +30,7 @@ pub mod cli;
 
 // Re-export main types for easier access
 pub use aead_crypto::{aead_encrypt, aead_decrypt, derive_chacha20_key};
+pub use lorawan_aes::{aes_ctr_encrypt, aes_ctr_decrypt, calculate_mic, verify_mic, get_aes_round_keys, get_aes_intermediate_state};
 pub use lorawan_parser::{AeadLorawanPacket, PacketMetadata};
 pub use simulation::run_simulation;
 pub use debug::debug_packet_structure;

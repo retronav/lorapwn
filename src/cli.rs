@@ -7,6 +7,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
+use crate::lorawan_aes::{get_aes_intermediate_state, aes_ctr_encrypt, LORAWAN_KEY_SIZE, AES_BLOCK_SIZE};
 
 #[cfg(feature = "std")]
 use std::vec::Vec;
@@ -18,16 +19,24 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, ValueEnum)]
+pub enum CryptoAlgorithm {
+    /// Modern ChaCha20-Poly1305 AEAD (default)
+    Aead,
+    /// Traditional LoRaWAN AES-CTR + CMAC
+    Aes,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
 pub enum Stage {
-    /// Initial ChaCha20 state matrix (key + nonce + counter)
+    /// Initial ChaCha20 state matrix (key + nonce + counter) or AES initial state
     InitialState,
-    /// State after first quarter-round (most vulnerable to side-channel attacks)
+    /// State after first quarter-round (ChaCha20) or first AES round (most vulnerable)
     QuarterRound1,
-    /// State after 4 quarter-rounds (one complete round)
+    /// State after 4 quarter-rounds (ChaCha20) or 4 AES rounds (one complete round)
     Round1,
     /// State after 10 rounds (half encryption)
     Round10,
-    /// Final state after 20 rounds
+    /// Final state after 20 rounds (ChaCha20) or 10 rounds (AES)
     FinalState,
     /// Final ciphertext output
     FinalCiphertext,
@@ -43,11 +52,15 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub mode: Mode,
 
-    /// 32-byte (256-bit) secret key as 64-character hex string (required for profiling mode)
+    /// Cryptographic algorithm to use
+    #[arg(long, value_enum, default_value = "aead")]
+    pub crypto: CryptoAlgorithm,
+
+    /// Secret key as hex string (32 bytes for ChaCha20, 16 bytes for AES, required for profiling mode)
     #[arg(long)]
     pub key: Option<String>,
 
-    /// Input data as hex string (required for both modes)
+    /// Input data as hex string (12 bytes for ChaCha20 nonce, 16 bytes for AES plaintext, required for both modes)
     #[arg(long)]
     pub input: Option<String>,
 
@@ -209,66 +222,167 @@ pub fn get_chacha20_stage_data(key: &[u8; 32], nonce: &[u8; 12], stage: &Stage) 
     }
 }
 
-pub fn perform_profiling_mode(key_hex: &str, input_hex: &str, stage: &Stage, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse key
-    let key_bytes = hex::decode(key_hex)?;
-    if key_bytes.len() != 32 {
-        return Err("Key must be exactly 32 bytes (64 hex characters)".into());
+pub fn get_aes_stage_data(key: &[u8; LORAWAN_KEY_SIZE], plaintext: &[u8; AES_BLOCK_SIZE], stage: &Stage) -> Vec<u8> {
+    match stage {
+        Stage::InitialState => {
+            // Return initial AES state (plaintext XOR key)
+            let mut state = *plaintext;
+            for i in 0..AES_BLOCK_SIZE {
+                state[i] ^= key[i % LORAWAN_KEY_SIZE];
+            }
+            state.to_vec()
+        }
+        Stage::QuarterRound1 => {
+            // Get state after first AES round (most vulnerable)
+            get_aes_intermediate_state(key, plaintext, 1).to_vec()
+        }
+        Stage::Round1 => {
+            // Get state after 4 AES rounds
+            get_aes_intermediate_state(key, plaintext, 4).to_vec()
+        }
+        Stage::Round10 => {
+            // Get state after 10 AES rounds (full AES-128)
+            get_aes_intermediate_state(key, plaintext, 10).to_vec()
+        }
+        Stage::FinalState => {
+            // Same as Round10 for AES-128
+            get_aes_intermediate_state(key, plaintext, 10).to_vec()
+        }
+        Stage::FinalCiphertext => {
+            // Use AES-CTR to encrypt a test message
+            let fcnt = 42;
+            let devaddr = 0x01020304;
+            let dir = 0;
+            let plaintext_msg = b"Hello LoRaWAN with AES-CTR!";
+            aes_ctr_encrypt(key, plaintext_msg, fcnt, devaddr, dir).unwrap_or_else(|_| Vec::new())
+        }
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&key_bytes);
+}
 
-    // Parse input (nonce)
-    let input_bytes = hex::decode(input_hex)?;
-    if input_bytes.len() != 12 {
-        return Err("Input must be exactly 12 bytes (24 hex characters) for ChaCha20-Poly1305 nonce".into());
+pub fn perform_profiling_mode(key_hex: &str, input_hex: &str, stage: &Stage, crypto: &CryptoAlgorithm, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+    match crypto {
+        CryptoAlgorithm::Aead => {
+            // Parse key for ChaCha20 (32 bytes)
+            let key_bytes = hex::decode(key_hex)?;
+            if key_bytes.len() != 32 {
+                return Err("Key must be exactly 32 bytes (64 hex characters) for ChaCha20".into());
+            }
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&key_bytes);
+
+            // Parse input (nonce for ChaCha20)
+            let input_bytes = hex::decode(input_hex)?;
+            if input_bytes.len() != 12 {
+                return Err("Input must be exactly 12 bytes (24 hex characters) for ChaCha20 nonce".into());
+            }
+            let mut nonce = [0u8; 12];
+            nonce.copy_from_slice(&input_bytes);
+
+            if verbose {
+                println!("=== PROFILING MODE (ChaCha20-Poly1305 AEAD) ===");
+                println!("KEY: {}", key_hex);
+                println!("INPUT: {}", input_hex);
+                println!("STAGE: {:?}", stage);
+                println!("===============================================");
+            }
+
+            // Get the specified stage data
+            let stage_data = get_chacha20_stage_data(&key, &nonce, stage);
+            print_stage_output(stage, &stage_data, verbose);
+        }
+        CryptoAlgorithm::Aes => {
+            // Parse key for AES (16 bytes)
+            let key_bytes = hex::decode(key_hex)?;
+            if key_bytes.len() != LORAWAN_KEY_SIZE {
+                return Err("Key must be exactly 16 bytes (32 hex characters) for AES".into());
+            }
+            let mut key = [0u8; LORAWAN_KEY_SIZE];
+            key.copy_from_slice(&key_bytes);
+
+            // Parse input (plaintext for AES)
+            let input_bytes = hex::decode(input_hex)?;
+            if input_bytes.len() != AES_BLOCK_SIZE {
+                return Err("Input must be exactly 16 bytes (32 hex characters) for AES plaintext".into());
+            }
+            let mut plaintext = [0u8; AES_BLOCK_SIZE];
+            plaintext.copy_from_slice(&input_bytes);
+
+            if verbose {
+                println!("=== PROFILING MODE (AES-CTR + CMAC) ===");
+                println!("KEY: {}", key_hex);
+                println!("INPUT: {}", input_hex);
+                println!("STAGE: {:?}", stage);
+                println!("=======================================");
+            }
+
+            // Get the specified stage data
+            let stage_data = get_aes_stage_data(&key, &plaintext, stage);
+            print_stage_output(stage, &stage_data, verbose);
+        }
     }
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&input_bytes);
-
-    if verbose {
-        println!("=== PROFILING MODE ===");
-        println!("KEY: {}", key_hex);
-        println!("INPUT: {}", input_hex);
-        println!("STAGE: {:?}", stage);
-        println!("========================");
-    }
-
-    // Get the specified stage data
-    let stage_data = get_chacha20_stage_data(&key, &nonce, stage);
-    print_stage_output(stage, &stage_data, verbose);
 
     Ok(())
 }
 
-pub fn perform_target_mode(input_hex: &str, stage: &Stage, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // Fixed internal key for target mode
-    let fixed_key = [
-        0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
-        0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C,
-        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-        0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
-    ];
+pub fn perform_target_mode(input_hex: &str, stage: &Stage, crypto: &CryptoAlgorithm, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+    match crypto {
+        CryptoAlgorithm::Aead => {
+            // Fixed internal key for target mode (ChaCha20)
+            let fixed_key = [
+                0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
+                0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C,
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+            ];
 
-    // Parse input (nonce)
-    let input_bytes = hex::decode(input_hex)?;
-    if input_bytes.len() != 12 {
-        return Err("Input must be exactly 12 bytes (24 hex characters) for ChaCha20-Poly1305 nonce".into());
+            // Parse input (nonce)
+            let input_bytes = hex::decode(input_hex)?;
+            if input_bytes.len() != 12 {
+                return Err("Input must be exactly 12 bytes (24 hex characters) for ChaCha20 nonce".into());
+            }
+            let mut nonce = [0u8; 12];
+            nonce.copy_from_slice(&input_bytes);
+
+            if verbose {
+                println!("=== TARGET MODE (ChaCha20-Poly1305 AEAD) ===");
+                println!("INPUT: {}", input_hex);
+                println!("STAGE: {:?}", stage);
+                println!("USING_FIXED_KEY: true");
+                println!("============================================");
+            }
+
+            // Get the specified stage data
+            let stage_data = get_chacha20_stage_data(&fixed_key, &nonce, stage);
+            print_stage_output(&stage, &stage_data, verbose);
+        }
+        CryptoAlgorithm::Aes => {
+            // Fixed internal key for target mode (AES)
+            let fixed_key = [
+                0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
+                0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C,
+            ];
+
+            // Parse input (plaintext)
+            let input_bytes = hex::decode(input_hex)?;
+            if input_bytes.len() != AES_BLOCK_SIZE {
+                return Err("Input must be exactly 16 bytes (32 hex characters) for AES plaintext".into());
+            }
+            let mut plaintext = [0u8; AES_BLOCK_SIZE];
+            plaintext.copy_from_slice(&input_bytes);
+
+            if verbose {
+                println!("=== TARGET MODE (AES-CTR + CMAC) ===");
+                println!("INPUT: {}", input_hex);
+                println!("STAGE: {:?}", stage);
+                println!("USING_FIXED_KEY: true");
+                println!("====================================");
+            }
+
+            // Get the specified stage data
+            let stage_data = get_aes_stage_data(&fixed_key, &plaintext, stage);
+            print_stage_output(&stage, &stage_data, verbose);
+        }
     }
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&input_bytes);
-
-    if verbose {
-        println!("=== TARGET MODE ===");
-        println!("INPUT: {}", input_hex);
-        println!("STAGE: {:?}", stage);
-        println!("USING_FIXED_KEY: true");
-        println!("===================");
-    }
-
-    // Get the specified stage data
-    let stage_data = get_chacha20_stage_data(&fixed_key, &nonce, stage);
-    print_stage_output(stage, &stage_data, verbose);
 
     Ok(())
 }

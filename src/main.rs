@@ -79,7 +79,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            perform_profiling_mode(&key, &input, &args.stage, args.verbose)
+            perform_profiling_mode(&key, &input, &args.stage, &args.crypto, args.verbose)
         }
         Mode::Target => {
             let input = match args.input {
@@ -89,7 +89,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            perform_target_mode(&input, &args.stage, args.verbose)
+            perform_target_mode(&input, &args.stage, &args.crypto, args.verbose)
         }
     };
 
