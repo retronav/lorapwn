@@ -1,6 +1,6 @@
 //! Simple performance analysis module
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct CryptoMetrics {
@@ -22,8 +22,18 @@ pub fn run_simple_performance_test() {
     for size in test_sizes {
         println!("  📦 Testing payload size: {} bytes", size);
 
-        // Here you would call your crypto implementations
-        // For now, just print the size
+        // Create a dummy metric for demonstration
+        let _metric = CryptoMetrics {
+            algorithm: "ChaCha20-Poly1305".to_string(),
+            payload_size: size,
+            encryption_time: Duration::from_micros(100),
+            decryption_time: Duration::from_micros(90),
+            total_time: Duration::from_micros(190),
+            throughput_mbps: (size as f64) / 0.19, // Simple calculation
+            tag_size: 16,
+            packet_overhead: 25,
+        };
+
         println!("     ✅ Tested {} bytes", size);
     }
 

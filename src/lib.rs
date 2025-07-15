@@ -13,3 +13,4 @@ pub mod debug;
 pub mod crypto_benchmark;
 pub mod performance_analysis;
 pub mod packet_format;
+pub mod crypto_test;

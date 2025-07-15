@@ -18,12 +18,12 @@ use ctr::Ctr64BE;
 use ctr::cipher::{KeyIvInit, StreamCipher};
 
 // AES-GCM AEAD
-use aes_gcm::{Aes128Gcm, KeyInit, Nonce as AesNonce};
-use aes_gcm::aead::{Aead, Payload as AesPayload};
+use aes_gcm::{Aes128Gcm, Nonce as AesNonce};
+use aes_gcm::aead::{Aead as AesAead, Payload as AesPayload, KeyInit as AesKeyInit};
 
 // ChaCha20-Poly1305 AEAD
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit as ChaChaKeyInit, Nonce as ChaChaNoce};
-use chacha20poly1305::aead::{Aead as ChaChaAead, Payload as ChaChaPayload};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaChaNoce};
+use chacha20poly1305::aead::{Aead as ChaChaAead, Payload as ChaChaPayload, KeyInit as ChaChaKeyInit};
 
 const LORAWAN_KEY_SIZE: usize = 16;
 const AES_GCM_KEY_SIZE: usize = 16;
@@ -70,8 +70,8 @@ impl AesCtrCmac {
         let mut ciphertext = plaintext.to_vec();
         cipher.apply_keystream(&mut ciphertext);
 
-        // CMAC calculation
-        let mut mac = Cmac::<Aes128>::new_from_slice(&self.key).unwrap();
+        // CMAC calculation - use explicit disambiguation for Mac trait
+        let mut mac = <Cmac<Aes128> as Mac>::new(&self.key.into());
         mac.update(aad);
         mac.update(&ciphertext);
         let result = mac.finalize();
@@ -84,8 +84,8 @@ impl AesCtrCmac {
     }
 
     pub fn decrypt(&self, aad: &[u8], ciphertext: &[u8], mic: &[u8; 4], fcnt: u32, dev_addr: u32, dir: u8) -> Result<Vec<u8>, &'static str> {
-        // Verify CMAC
-        let mut mac = Cmac::<Aes128>::new_from_slice(&self.key).unwrap();
+        // Verify CMAC - use explicit disambiguation for Mac trait
+        let mut mac = <Cmac<Aes128> as Mac>::new(&self.key.into());
         mac.update(aad);
         mac.update(ciphertext);
         let result = mac.finalize();
@@ -119,7 +119,7 @@ pub struct AesGcmImpl {
 impl AesGcmImpl {
     pub fn new(key: [u8; AES_GCM_KEY_SIZE]) -> Self {
         Self {
-            cipher: Aes128Gcm::new_from_slice(&key).unwrap(),
+            cipher: <Aes128Gcm as AesKeyInit>::new_from_slice(&key).unwrap(),
         }
     }
 
@@ -170,7 +170,7 @@ pub struct ChaCha20Poly1305Impl {
 impl ChaCha20Poly1305Impl {
     pub fn new(key: [u8; CHACHA20_KEY_SIZE]) -> Self {
         Self {
-            cipher: ChaCha20Poly1305::new_from_slice(&key).unwrap(),
+            cipher: <ChaCha20Poly1305 as ChaChaKeyInit>::new_from_slice(&key).unwrap(),
         }
     }
 
