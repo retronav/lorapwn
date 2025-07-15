@@ -1,10 +1,8 @@
 //! Simple test module to verify crypto implementations
 
-use crate::crypto_benchmark::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::crypto_benchmark::*;
 
     #[test]
     fn test_aes_ctr_cmac_basic() {

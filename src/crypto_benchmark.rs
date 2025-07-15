@@ -2,6 +2,7 @@
 //! Compares AES-128-CTR+CMAC vs AES-GCM vs ChaCha20-Poly1305 for LoRaWAN
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(dead_code)] // Allow unused constants for benchmarking
 
 use rand::Rng;
 
@@ -23,12 +24,12 @@ use aes_gcm::aead::{Aead as AesAead, Payload as AesPayload, KeyInit as AesKeyIni
 
 // ChaCha20-Poly1305 AEAD
 use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaChaNoce};
-use chacha20poly1305::aead::{Aead as ChaChaAead, Payload as ChaChaPayload, KeyInit as ChaChaKeyInit};
+use chacha20poly1305::aead::{Payload as ChaChaPayload, KeyInit as ChaChaKeyInit};
 
-const LORAWAN_KEY_SIZE: usize = 16;
-const AES_GCM_KEY_SIZE: usize = 16;
-const CHACHA20_KEY_SIZE: usize = 32;
-const NONCE_SIZE: usize = 12;
+pub const LORAWAN_KEY_SIZE: usize = 16;
+pub const AES_GCM_KEY_SIZE: usize = 16;
+pub const CHACHA20_KEY_SIZE: usize = 32;
+pub const NONCE_SIZE: usize = 12;
 
 /// Generate random test data
 pub fn generate_test_data(size: usize) -> Vec<u8> {
