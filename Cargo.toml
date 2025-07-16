@@ -15,6 +15,12 @@ defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 heapless = { version = "0.8", default-features = false }
+aes = { version = "0.8", default-features = false }
+ghash = { version = "0.5", default-features = false }
+ctr = { version = "0.9", default-features = false }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+aead = { version = "0.5", default-features = false, features = ["alloc"] }
+linked_list_allocator = "0.10"
 
 [build-dependencies]
 flip-link = "0.1"
