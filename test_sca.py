@@ -21,6 +21,7 @@ STAGES_TO_TEST = [
 # --- Simulation Parameters ---
 NUM_PROFILING_TRACES = 100000  # Increased to 100k
 NUM_TARGET_TRACES = 100
+NUM_INFERENCE_RUNS = 10  # Number of times to repeat inference for better statistics
 TRAINING_EPOCHS = 50  # Increased to 50
 KEY_SIZE_BYTES = 32
 INPUT_SIZE_BYTES = 12
@@ -115,7 +116,7 @@ def create_cnn_model(input_shape, num_classes):
     return model
 
 
-def perform_attack(model, target_traces, correct_key_byte_val):
+def perform_attack(model, target_traces, correct_key_byte_val, verbose=False):
     """Performs the attack and returns the rank of the correct key guess."""
     predictions = model.predict(target_traces, verbose=0)
     log_likelihoods = np.zeros(256)
@@ -123,11 +124,70 @@ def perform_attack(model, target_traces, correct_key_byte_val):
         hypothetical_hw_labels = np.random.randint(0, 33, size=len(target_traces))
         log_likelihoods[key_guess] = np.sum(np.log(predictions[np.arange(len(target_traces)), hypothetical_hw_labels] + 1e-9))
     ranked_indices = np.argsort(log_likelihoods)[::-1]
+    
+    if verbose:
+        print(f"  Target key byte: 0x{correct_key_byte_val:02X}")
+        print(f"  Top 10 predicted keys:")
+        for i in range(min(10, len(ranked_indices))):
+            key_guess = ranked_indices[i]
+            likelihood = log_likelihoods[key_guess]
+            print(f"    Rank {i+1}: 0x{key_guess:02X} (likelihood: {likelihood:.4f})")
+    
     try:
         rank = np.where(ranked_indices == correct_key_byte_val)[0][0]
-        return rank
+        return rank, ranked_indices
     except IndexError:
-        return -1
+        return -1, ranked_indices
+
+
+def perform_multiple_attacks(model, stage, correct_key_byte_val, num_runs=NUM_INFERENCE_RUNS):
+    """Performs multiple attacks and returns statistics."""
+    ranks = []
+    success_count = 0
+    all_predictions = []
+    
+    print(f"Performing {num_runs} inference runs for stage '{stage}'...")
+    print(f"Target key byte: 0x{correct_key_byte_val:02X}")
+    print("-" * 40)
+    
+    for run in tqdm(range(num_runs), desc=f"Attacking '{stage}'"):
+        # Generate fresh target traces for each run
+        target_traces = generate_target_traces(stage, NUM_TARGET_TRACES)
+        
+        # Perform attack with verbose output for first few runs
+        verbose = run < 3  # Show details for first 3 runs
+        rank, ranked_indices = perform_attack(model, target_traces, correct_key_byte_val, verbose)
+        
+        ranks.append(rank)
+        all_predictions.append(ranked_indices)
+        
+        if verbose:
+            if rank == 0:
+                print(f"  🎯 Run {run+1}: SUCCESS! Correct key ranked #1")
+            elif rank != -1:
+                print(f"  ❌ Run {run+1}: FAILED. Correct key ranked #{rank+1}")
+            else:
+                print(f"  ❓ Run {run+1}: FAILED. Correct key not found in ranking")
+            print()
+        
+        if rank == 0:
+            success_count += 1
+    
+    # Calculate statistics
+    valid_ranks = [r for r in ranks if r != -1]
+    stats = {
+        'ranks': ranks,
+        'success_count': success_count,
+        'success_rate': success_count / num_runs,
+        'avg_rank': np.mean(valid_ranks) if valid_ranks else -1,
+        'median_rank': np.median(valid_ranks) if valid_ranks else -1,
+        'min_rank': np.min(valid_ranks) if valid_ranks else -1,
+        'max_rank': np.max(valid_ranks) if valid_ranks else -1,
+        'failed_runs': num_runs - len(valid_ranks),
+        'all_predictions': all_predictions
+    }
+    
+    return stats
 
 
 # --- 4. Main Execution ---
@@ -162,20 +222,52 @@ if __name__ == "__main__":
             model.save(model_filename)
 
             # --- Attack Phase ---
-            target_traces = generate_target_traces(stage, NUM_TARGET_TRACES)
-            print(f"\nPerforming attack on stage '{stage}'...")
-            rank = perform_attack(model, target_traces, CORRECT_KEY_BYTE_0)
-            results[stage] = rank
+            print(f"\nPerforming multiple attacks on stage '{stage}'...")
+            attack_stats = perform_multiple_attacks(model, stage, CORRECT_KEY_BYTE_0, NUM_INFERENCE_RUNS)
+            results[stage] = attack_stats
 
         # --- Final Summary ---
-        print("\n" + "=" * 50)
+        print("\n" + "=" * 80)
         print("🎉 Attack Simulation Complete. Final Results: 🎉")
-        print("=" * 50)
-        for stage, rank in results.items():
-            if rank == 0:
-                print(f"✅ Stage: {stage:<20} | SUCCESS! Rank = 0")
-            elif rank != -1:
-                print(f"❌ Stage: {stage:<20} | FAILED. Rank = {rank}")
+        print("=" * 80)
+        for stage, stats in results.items():
+            success_rate = stats['success_rate'] * 100
+            avg_rank = stats['avg_rank']
+            median_rank = stats['median_rank']
+            min_rank = stats['min_rank']
+            max_rank = stats['max_rank']
+            failed_runs = stats['failed_runs']
+            
+            print(f"Stage: {stage:<20}")
+            print(f"  Target Key Byte: 0x{CORRECT_KEY_BYTE_0:02X}")
+            print(f"  Success Rate: {success_rate:.1f}% ({stats['success_count']}/{NUM_INFERENCE_RUNS})")
+            if avg_rank != -1:
+                print(f"  Average Rank: {avg_rank:.2f}")
+                print(f"  Median Rank:  {median_rank:.1f}")
+                print(f"  Min Rank:     {min_rank}")
+                print(f"  Max Rank:     {max_rank}")
+            if failed_runs > 0:
+                print(f"  Failed Runs:  {failed_runs}")
+            
+            # Show top predicted keys across all runs
+            all_predictions = stats['all_predictions']
+            if all_predictions:
+                # Count frequency of top predictions
+                top_predictions = {}
+                for predictions in all_predictions:
+                    top_key = predictions[0]  # Best prediction for this run
+                    top_predictions[top_key] = top_predictions.get(top_key, 0) + 1
+                
+                print(f"  Most Frequent Top Predictions:")
+                sorted_predictions = sorted(top_predictions.items(), key=lambda x: x[1], reverse=True)
+                for i, (key, count) in enumerate(sorted_predictions[:5]):
+                    percentage = (count / NUM_INFERENCE_RUNS) * 100
+                    marker = "🎯" if key == CORRECT_KEY_BYTE_0 else "  "
+                    print(f"    {marker} 0x{key:02X}: {count}/{NUM_INFERENCE_RUNS} runs ({percentage:.1f}%)")
+            
+            if stats['success_count'] > 0:
+                print(f"  ✅ SUCCESS! ({stats['success_count']}/{NUM_INFERENCE_RUNS} runs)")
             else:
-                print(f"❓ Stage: {stage:<20} | FAILED. Key not found.")
-        print("=" * 50)
+                print(f"  ❌ FAILED. No successful attacks.")
+            print()
+        print("=" * 80)
