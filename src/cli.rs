@@ -11,11 +11,16 @@ use crate::lorawan_aes::{get_aes_intermediate_state, aes_ctr_encrypt, LORAWAN_KE
 
 #[cfg(feature = "std")]
 use std::vec::Vec;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use rand::RngCore;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Mode {
     Profiling,
     Target,
+    /// Generate bulk profiling data for machine learning training
+    BulkProfiling,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -71,6 +76,14 @@ pub struct Args {
     /// Enable verbose output with labels and debugging info
     #[arg(long)]
     pub verbose: bool,
+
+    /// Number of traces to generate (for bulk-profiling mode)
+    #[arg(long, default_value = "1000")]
+    pub num_traces: usize,
+
+    /// Output file path for bulk profiling data (for bulk-profiling mode)
+    #[arg(long)]
+    pub output_file: Option<String>,
 }
 
 pub fn print_stage_output(stage: &Stage, data: &[u8], verbose: bool) {
@@ -382,6 +395,97 @@ pub fn perform_target_mode(input_hex: &str, stage: &Stage, crypto: &CryptoAlgori
             let stage_data = get_aes_stage_data(&fixed_key, &plaintext, stage);
             print_stage_output(&stage, &stage_data, verbose);
         }
+    }
+
+    Ok(())
+}
+
+pub fn generate_random_bytes(size: usize) -> Vec<u8> {
+    let mut rng = rand::thread_rng();
+    let mut bytes = vec![0u8; size];
+    rng.fill_bytes(&mut bytes);
+    bytes
+}
+
+pub fn perform_bulk_profiling_mode(stage: &Stage, crypto: &CryptoAlgorithm, num_traces: usize, output_file: Option<&str>, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if verbose {
+        println!("=== BULK PROFILING MODE ===");
+        println!("STAGE: {:?}", stage);
+        println!("CRYPTO: {:?}", crypto);
+        println!("NUM_TRACES: {}", num_traces);
+        println!("===========================");
+    }
+
+    // Determine output - either file or stdout
+    let use_file = output_file.is_some();
+    let mut file_writer = if let Some(path) = output_file {
+        Some(BufWriter::new(File::create(path)?))
+    } else {
+        None
+    };
+
+    // Generate and output traces
+    for i in 0..num_traces {
+        if verbose && (i % 1000 == 0) {
+            eprintln!("Generated {} traces...", i);
+        }
+
+        let (trace_data, key_hex, input_hex) = match crypto {
+            CryptoAlgorithm::Aead => {
+                // Generate random key (32 bytes for ChaCha20)
+                let key_bytes = generate_random_bytes(32);
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&key_bytes);
+                let key_hex = hex::encode(&key_bytes);
+
+                // Generate random nonce (12 bytes for ChaCha20)
+                let nonce_bytes = generate_random_bytes(12);
+                let mut nonce = [0u8; 12];
+                nonce.copy_from_slice(&nonce_bytes);
+                let nonce_hex = hex::encode(&nonce_bytes);
+
+                // Get stage data
+                let stage_data = get_chacha20_stage_data(&key, &nonce, stage);
+                (stage_data, key_hex, nonce_hex)
+            }
+            CryptoAlgorithm::Aes => {
+                // Generate random key (16 bytes for AES)
+                let key_bytes = generate_random_bytes(LORAWAN_KEY_SIZE);
+                let mut key = [0u8; LORAWAN_KEY_SIZE];
+                key.copy_from_slice(&key_bytes);
+                let key_hex = hex::encode(&key_bytes);
+
+                // Generate random plaintext (16 bytes for AES)
+                let plaintext_bytes = generate_random_bytes(AES_BLOCK_SIZE);
+                let mut plaintext = [0u8; AES_BLOCK_SIZE];
+                plaintext.copy_from_slice(&plaintext_bytes);
+                let plaintext_hex = hex::encode(&plaintext_bytes);
+
+                // Get stage data
+                let stage_data = get_aes_stage_data(&key, &plaintext, stage);
+                (stage_data, key_hex, plaintext_hex)
+            }
+        };
+
+        // Format output: trace_hex,key_hex,input_hex
+        let trace_hex = hex::encode(&trace_data);
+        let output_line = format!("{},{},{}", trace_hex, key_hex, input_hex);
+
+        if use_file {
+            if let Some(ref mut writer) = file_writer {
+                writeln!(writer, "{}", output_line)?;
+            }
+        } else {
+            println!("{}", output_line);
+        }
+    }
+
+    if let Some(mut writer) = file_writer {
+        writer.flush()?;
+    }
+
+    if verbose {
+        eprintln!("Generated {} traces successfully!", num_traces);
     }
 
     Ok(())

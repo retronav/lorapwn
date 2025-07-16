@@ -11,7 +11,7 @@ use lorapwn;
 use clap::Parser;
 
 #[cfg(feature = "std")]
-use lorapwn::cli::{Args, Mode, perform_profiling_mode, perform_target_mode};
+use lorapwn::cli::{Args, Mode, perform_profiling_mode, perform_target_mode, perform_bulk_profiling_mode};
 
 #[cfg(test)]
 mod tests {
@@ -90,6 +90,15 @@ fn main() {
                 }
             };
             perform_target_mode(&input, &args.stage, &args.crypto, args.verbose)
+        }
+        Mode::BulkProfiling => {
+            perform_bulk_profiling_mode(
+                &args.stage,
+                &args.crypto,
+                args.num_traces,
+                args.output_file.as_deref(),
+                args.verbose
+            )
         }
     };
 

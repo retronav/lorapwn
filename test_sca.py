@@ -1,5 +1,8 @@
-import subprocess
 import os
+# Suppress TensorFlow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+import subprocess
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
@@ -69,17 +72,63 @@ def get_profiling_data(stage, num_traces, use_cache=False):
         cache = np.load(cache_file)
         return cache["traces"], cache["keys"], cache["inputs"]
 
-    print(f"Generating {num_traces} profiling traces for stage '{stage}'...")
-    traces, keys, inputs = generate_profiling_traces(stage, num_traces)
+    print(f"Generating {num_traces} profiling traces for stage '{stage}' using Rust CLI...")
+    traces, keys, inputs = generate_profiling_traces_rust(stage, num_traces)
 
     print(f"Saving profiling data to cache file: {cache_file}...")
     np.savez_compressed(cache_file, traces=traces, keys=keys, inputs=inputs)
     return traces, keys, inputs
 
 
-def generate_profiling_traces(stage, num_traces):
+def generate_profiling_traces_rust(stage, num_traces):
+    """Generate profiling traces using Rust CLI bulk mode for better performance."""
+    command = [
+        RUST_EXECUTABLE_PATH,
+        "--mode", "bulk-profiling",
+        "--stage", stage,
+        "--num-traces", str(num_traces),
+        "--verbose"
+    ]
+
+    try:
+        print(f"Running: {' '.join(command)}")
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+
+        # Parse the CSV output: trace_hex,key_hex,input_hex
+        lines = result.stdout.strip().split('\n')
+        all_traces, known_keys, known_inputs = [], [], []
+
+        for line in lines:
+            if line.strip() and ',' in line:  # Skip empty lines and progress messages
+                parts = line.split(',')
+                if len(parts) == 3:
+                    trace_hex, key_hex, input_hex = parts
+                    # Convert hex trace to integer array
+                    trace_bytes = bytes.fromhex(trace_hex)
+                    trace_ints = [int.from_bytes(trace_bytes[i:i+4], 'little') for i in range(0, len(trace_bytes), 4)]
+
+                    all_traces.append(trace_ints)
+                    known_keys.append(key_hex)
+                    known_inputs.append(input_hex)
+
+        print(f"Successfully generated {len(all_traces)} traces using Rust CLI")
+        return np.array(all_traces), np.array(known_keys), np.array(known_inputs)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error running Rust CLI bulk profiling: {e}")
+        print(f"Stderr: {e.stderr}")
+        print("Falling back to Python-based trace generation...")
+        return generate_profiling_traces_python(stage, num_traces)
+    except Exception as e:
+        print(f"Error parsing Rust CLI output: {e}")
+        print("Falling back to Python-based trace generation...")
+        return generate_profiling_traces_python(stage, num_traces)
+
+
+def generate_profiling_traces_python(stage, num_traces):
+    """Fallback: Generate profiling traces using Python (slower but compatible)."""
     all_traces, known_keys, known_inputs = [], [], []
-    for _ in tqdm(range(num_traces), desc=f"Profiling '{stage}'"):
+    for _ in tqdm(range(num_traces), desc=f"Profiling '{stage}' (Python fallback)"):
         key = generate_hex_string(KEY_SIZE_BYTES)
         input_data = generate_hex_string(INPUT_SIZE_BYTES)
         trace = run_rust_cli("profiling", stage, input_data, key=key)
@@ -103,16 +152,65 @@ def generate_target_traces(stage, num_traces):
 
 # --- 3. Analysis and Attack ---
 def create_cnn_model(input_shape, num_classes):
-    """Creates a simple CNN model for side-channel analysis."""
+    """Creates a CNN model for side-channel analysis."""
     input_layer = tf.keras.layers.Input(shape=input_shape)
-    x = tf.keras.layers.Conv1D(filters=8, kernel_size=3, padding="same", activation="relu")(input_layer)
+
+    # Check if input is too small for pooling layers
+    trace_length = input_shape[0]
+
+    # --- Convolutional Blocks with adaptive pooling ---
+    # Block 1
+    x = tf.keras.layers.Conv1D(filters=8, kernel_size=3, padding="same")(input_layer)
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.MaxPooling1D(pool_size=2)(x)
+    x = tf.keras.layers.ReLU()(x)
+    if trace_length >= 4:  # Only pool if we have enough data
+        x = tf.keras.layers.MaxPooling1D(pool_size=2)(x)
+        trace_length = trace_length // 2
+    x = tf.keras.layers.Dropout(0.1)(x)
+
+    # Block 2
+    x = tf.keras.layers.Conv1D(filters=16, kernel_size=3, padding="same")(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.ReLU()(x)
+    if trace_length >= 4:  # Only pool if we have enough data
+        x = tf.keras.layers.MaxPooling1D(pool_size=2)(x)
+        trace_length = trace_length // 2
+    x = tf.keras.layers.Dropout(0.1)(x)
+
+    # Block 3
+    x = tf.keras.layers.Conv1D(filters=32, kernel_size=3, padding="same")(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.ReLU()(x)
+    if trace_length >= 4:  # Only pool if we have enough data
+        x = tf.keras.layers.MaxPooling1D(pool_size=2)(x)
+        trace_length = trace_length // 2
+    x = tf.keras.layers.Dropout(0.1)(x)
+
+    # Block 4
+    x = tf.keras.layers.Conv1D(filters=64, kernel_size=3, padding="same")(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.ReLU()(x)
+    if trace_length >= 4:  # Only pool if we have enough data
+        x = tf.keras.layers.MaxPooling1D(pool_size=2)(x)
+        trace_length = trace_length // 2
+    x = tf.keras.layers.Dropout(0.1)(x)
+
+    # --- Fully Connected Layers ---
     x = tf.keras.layers.Flatten()(x)
-    x = tf.keras.layers.Dense(20, activation="relu")(x)
+
+    # Fully Connected Block 1
+    x = tf.keras.layers.Dense(32, activation='relu')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.ReLU()(x)
+    x = tf.keras.layers.Dropout(0.1)(x)
+
+    # Fully Connected Block 2 (Output Layer)
     output_layer = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+
     model = tf.keras.models.Model(inputs=input_layer, outputs=output_layer)
-    model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
+    model.compile(optimizer="adam",
+                  loss="sparse_categorical_crossentropy",
+                  metrics=["accuracy"])
     return model
 
 
@@ -124,7 +222,7 @@ def perform_attack(model, target_traces, correct_key_byte_val, verbose=False):
         hypothetical_hw_labels = np.random.randint(0, 33, size=len(target_traces))
         log_likelihoods[key_guess] = np.sum(np.log(predictions[np.arange(len(target_traces)), hypothetical_hw_labels] + 1e-9))
     ranked_indices = np.argsort(log_likelihoods)[::-1]
-    
+
     if verbose:
         print(f"  Target key byte: 0x{correct_key_byte_val:02X}")
         print(f"  Top 10 predicted keys:")
@@ -132,7 +230,7 @@ def perform_attack(model, target_traces, correct_key_byte_val, verbose=False):
             key_guess = ranked_indices[i]
             likelihood = log_likelihoods[key_guess]
             print(f"    Rank {i+1}: 0x{key_guess:02X} (likelihood: {likelihood:.4f})")
-    
+
     try:
         rank = np.where(ranked_indices == correct_key_byte_val)[0][0]
         return rank, ranked_indices
@@ -145,22 +243,22 @@ def perform_multiple_attacks(model, stage, correct_key_byte_val, num_runs=NUM_IN
     ranks = []
     success_count = 0
     all_predictions = []
-    
+
     print(f"Performing {num_runs} inference runs for stage '{stage}'...")
     print(f"Target key byte: 0x{correct_key_byte_val:02X}")
     print("-" * 40)
-    
+
     for run in tqdm(range(num_runs), desc=f"Attacking '{stage}'"):
         # Generate fresh target traces for each run
         target_traces = generate_target_traces(stage, NUM_TARGET_TRACES)
-        
+
         # Perform attack with verbose output for first few runs
         verbose = run < 3  # Show details for first 3 runs
         rank, ranked_indices = perform_attack(model, target_traces, correct_key_byte_val, verbose)
-        
+
         ranks.append(rank)
         all_predictions.append(ranked_indices)
-        
+
         if verbose:
             if rank == 0:
                 print(f"  🎯 Run {run+1}: SUCCESS! Correct key ranked #1")
@@ -169,10 +267,10 @@ def perform_multiple_attacks(model, stage, correct_key_byte_val, num_runs=NUM_IN
             else:
                 print(f"  ❓ Run {run+1}: FAILED. Correct key not found in ranking")
             print()
-        
+
         if rank == 0:
             success_count += 1
-    
+
     # Calculate statistics
     valid_ranks = [r for r in ranks if r != -1]
     stats = {
@@ -186,7 +284,7 @@ def perform_multiple_attacks(model, stage, correct_key_byte_val, num_runs=NUM_IN
         'failed_runs': num_runs - len(valid_ranks),
         'all_predictions': all_predictions
     }
-    
+
     return stats
 
 
@@ -237,7 +335,7 @@ if __name__ == "__main__":
             min_rank = stats['min_rank']
             max_rank = stats['max_rank']
             failed_runs = stats['failed_runs']
-            
+
             print(f"Stage: {stage:<20}")
             print(f"  Target Key Byte: 0x{CORRECT_KEY_BYTE_0:02X}")
             print(f"  Success Rate: {success_rate:.1f}% ({stats['success_count']}/{NUM_INFERENCE_RUNS})")
@@ -248,7 +346,7 @@ if __name__ == "__main__":
                 print(f"  Max Rank:     {max_rank}")
             if failed_runs > 0:
                 print(f"  Failed Runs:  {failed_runs}")
-            
+
             # Show top predicted keys across all runs
             all_predictions = stats['all_predictions']
             if all_predictions:
@@ -257,14 +355,14 @@ if __name__ == "__main__":
                 for predictions in all_predictions:
                     top_key = predictions[0]  # Best prediction for this run
                     top_predictions[top_key] = top_predictions.get(top_key, 0) + 1
-                
+
                 print(f"  Most Frequent Top Predictions:")
                 sorted_predictions = sorted(top_predictions.items(), key=lambda x: x[1], reverse=True)
                 for i, (key, count) in enumerate(sorted_predictions[:5]):
                     percentage = (count / NUM_INFERENCE_RUNS) * 100
                     marker = "🎯" if key == CORRECT_KEY_BYTE_0 else "  "
                     print(f"    {marker} 0x{key:02X}: {count}/{NUM_INFERENCE_RUNS} runs ({percentage:.1f}%)")
-            
+
             if stats['success_count'] > 0:
                 print(f"  ✅ SUCCESS! ({stats['success_count']}/{NUM_INFERENCE_RUNS} runs)")
             else:
