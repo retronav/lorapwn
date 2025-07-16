@@ -28,20 +28,22 @@ pub enum CryptoAlgorithm {
     /// Modern ChaCha20-Poly1305 AEAD (default)
     Aead,
     /// Traditional LoRaWAN AES-CTR + CMAC
-    Aes,
+    AesCtr,
+    /// Modern AES-GCM AEAD
+    AesGcm,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Stage {
-    /// Initial ChaCha20 state matrix (key + nonce + counter) or AES initial state
+    /// Initial state (key setup, nonce/counter initialization)
     InitialState,
-    /// State after first quarter-round (ChaCha20) or first AES round (most vulnerable)
-    QuarterRound1,
-    /// State after 4 quarter-rounds (ChaCha20) or 4 AES rounds (one complete round)
-    Round1,
-    /// State after 10 rounds (half encryption)
+    /// First round/quarter-round (most vulnerable to side-channel attacks)
+    FirstRound,
+    /// After 4 rounds (one complete round cycle)
+    Round4,
+    /// After 10 rounds (half encryption for ChaCha20, full AES-128)
     Round10,
-    /// Final state after 20 rounds (ChaCha20) or 10 rounds (AES)
+    /// Final internal state before output
     FinalState,
     /// Final ciphertext output
     FinalCiphertext,
@@ -51,7 +53,6 @@ pub enum Stage {
 #[command(name = "lorapwn")]
 #[command(about = "LoRaWAN Security Research & Side-Channel Analysis Tool")]
 #[command(version = "0.1.0")]
-#[command(author = "HimuCodes")]
 pub struct Args {
     /// Operational mode
     #[arg(long, value_enum)]
@@ -70,7 +71,7 @@ pub struct Args {
     pub input: Option<String>,
 
     /// Select which cryptographic stage to output
-    #[arg(long, value_enum, default_value = "quarter-round-1")]
+    #[arg(long, value_enum, default_value = "first-round")]
     pub stage: Stage,
 
     /// Enable verbose output with labels and debugging info
@@ -184,7 +185,7 @@ pub fn get_chacha20_stage_data(key: &[u8; 32], nonce: &[u8; 12], stage: &Stage) 
             }
             bytes
         }
-        Stage::QuarterRound1 => {
+        Stage::FirstRound => {
             // Perform first quarter-round (most vulnerable)
             chacha20_quarter_round(&mut state, 0, 4, 8, 12);
             let mut bytes = Vec::new();
@@ -193,7 +194,7 @@ pub fn get_chacha20_stage_data(key: &[u8; 32], nonce: &[u8; 12], stage: &Stage) 
             }
             bytes
         }
-        Stage::Round1 => {
+        Stage::Round4 => {
             // Perform one complete round (4 quarter-rounds)
             chacha20_round(&mut state);
             let mut bytes = Vec::new();
@@ -245,11 +246,11 @@ pub fn get_aes_stage_data(key: &[u8; LORAWAN_KEY_SIZE], plaintext: &[u8; AES_BLO
             }
             state.to_vec()
         }
-        Stage::QuarterRound1 => {
+        Stage::FirstRound => {
             // Get state after first AES round (most vulnerable)
             get_aes_intermediate_state(key, plaintext, 1).to_vec()
         }
-        Stage::Round1 => {
+        Stage::Round4 => {
             // Get state after 4 AES rounds
             get_aes_intermediate_state(key, plaintext, 4).to_vec()
         }
@@ -303,7 +304,7 @@ pub fn perform_profiling_mode(key_hex: &str, input_hex: &str, stage: &Stage, cry
             let stage_data = get_chacha20_stage_data(&key, &nonce, stage);
             print_stage_output(stage, &stage_data, verbose);
         }
-        CryptoAlgorithm::Aes => {
+        CryptoAlgorithm::AesCtr => {
             // Parse key for AES (16 bytes)
             let key_bytes = hex::decode(key_hex)?;
             if key_bytes.len() != LORAWAN_KEY_SIZE {
@@ -326,6 +327,35 @@ pub fn perform_profiling_mode(key_hex: &str, input_hex: &str, stage: &Stage, cry
                 println!("INPUT: {}", input_hex);
                 println!("STAGE: {:?}", stage);
                 println!("=======================================");
+            }
+
+            // Get the specified stage data
+            let stage_data = get_aes_stage_data(&key, &plaintext, stage);
+            print_stage_output(stage, &stage_data, verbose);
+        }
+        CryptoAlgorithm::AesGcm => {
+            // Parse key for AES-GCM (16 bytes)
+            let key_bytes = hex::decode(key_hex)?;
+            if key_bytes.len() != LORAWAN_KEY_SIZE {
+                return Err("Key must be exactly 16 bytes (32 hex characters) for AES-GCM".into());
+            }
+            let mut key = [0u8; LORAWAN_KEY_SIZE];
+            key.copy_from_slice(&key_bytes);
+
+            // Parse input (plaintext for AES-GCM)
+            let input_bytes = hex::decode(input_hex)?;
+            if input_bytes.len() != AES_BLOCK_SIZE {
+                return Err("Input must be exactly 16 bytes (32 hex characters) for AES-GCM plaintext".into());
+            }
+            let mut plaintext = [0u8; AES_BLOCK_SIZE];
+            plaintext.copy_from_slice(&input_bytes);
+
+            if verbose {
+                println!("=== PROFILING MODE (AES-GCM) ===");
+                println!("KEY: {}", key_hex);
+                println!("INPUT: {}", input_hex);
+                println!("STAGE: {:?}", stage);
+                println!("=================================");
             }
 
             // Get the specified stage data
@@ -368,7 +398,7 @@ pub fn perform_target_mode(input_hex: &str, stage: &Stage, crypto: &CryptoAlgori
             let stage_data = get_chacha20_stage_data(&fixed_key, &nonce, stage);
             print_stage_output(&stage, &stage_data, verbose);
         }
-        CryptoAlgorithm::Aes => {
+        CryptoAlgorithm::AesCtr => {
             // Fixed internal key for target mode (AES)
             let fixed_key = [
                 0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
@@ -395,6 +425,33 @@ pub fn perform_target_mode(input_hex: &str, stage: &Stage, crypto: &CryptoAlgori
             let stage_data = get_aes_stage_data(&fixed_key, &plaintext, stage);
             print_stage_output(&stage, &stage_data, verbose);
         }
+        CryptoAlgorithm::AesGcm => {
+            // Fixed internal key for target mode (AES-GCM)
+            let fixed_key = [
+                0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
+                0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C,
+            ];
+
+            // Parse input (plaintext)
+            let input_bytes = hex::decode(input_hex)?;
+            if input_bytes.len() != AES_BLOCK_SIZE {
+                return Err("Input must be exactly 16 bytes (32 hex characters) for AES-GCM plaintext".into());
+            }
+            let mut plaintext = [0u8; AES_BLOCK_SIZE];
+            plaintext.copy_from_slice(&input_bytes);
+
+            if verbose {
+                println!("=== TARGET MODE (AES-GCM) ===");
+                println!("INPUT: {}", input_hex);
+                println!("STAGE: {:?}", stage);
+                println!("USING_FIXED_KEY: true");
+                println!("================================");
+            }
+
+            // Get the specified stage data
+            let stage_data = get_aes_stage_data(&fixed_key, &plaintext, stage);
+            print_stage_output(&stage, &stage_data, verbose);
+        }
     }
 
     Ok(())
@@ -407,14 +464,41 @@ pub fn generate_random_bytes(size: usize) -> Vec<u8> {
     bytes
 }
 
+pub fn add_realistic_noise_to_trace(trace_data: &mut Vec<u8>) {
+    // Add realistic measurement noise to simulate real-world power traces
+    let mut rng = rand::thread_rng();
+
+    // Add gaussian noise to each byte (simulating measurement noise)
+    for byte in trace_data.iter_mut() {
+        let noise = (rng.next_u32() % 7) as i8 - 3; // -3 to +3 noise
+        *byte = byte.saturating_add_signed(noise);
+    }
+
+    // Occasionally add burst noise (simulating environmental interference)
+    if rng.next_u32() % 100 < 5 { // 5% chance of burst noise
+        let burst_length = (rng.next_u32() % 8) + 1; // 1-8 bytes affected
+        let start_pos = rng.next_u32() as usize % trace_data.len();
+
+        for i in 0..burst_length {
+            let pos = (start_pos + i as usize) % trace_data.len();
+            let burst_noise = (rng.next_u32() % 21) as i8 - 10; // -10 to +10 burst noise
+            trace_data[pos] = trace_data[pos].saturating_add_signed(burst_noise);
+        }
+    }
+}
+
 pub fn perform_bulk_profiling_mode(stage: &Stage, crypto: &CryptoAlgorithm, num_traces: usize, output_file: Option<&str>, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
     if verbose {
-        println!("=== BULK PROFILING MODE ===");
-        println!("STAGE: {:?}", stage);
-        println!("CRYPTO: {:?}", crypto);
-        println!("NUM_TRACES: {}", num_traces);
-        println!("===========================");
+        eprintln!("=== BULK PROFILING MODE ===");
+        eprintln!("STAGE: {:?}", stage);
+        eprintln!("CRYPTO: {:?}", crypto);
+        eprintln!("NUM_TRACES: {}", num_traces);
+        eprintln!("===========================");
     }
+
+    // Seed the random number generator for reproducibility in testing
+    // but still allow for variation across runs
+    let mut rng = rand::thread_rng();
 
     // Determine output - either file or stdout
     let use_file = output_file.is_some();
@@ -430,7 +514,7 @@ pub fn perform_bulk_profiling_mode(stage: &Stage, crypto: &CryptoAlgorithm, num_
             eprintln!("Generated {} traces...", i);
         }
 
-        let (trace_data, key_hex, input_hex) = match crypto {
+        let (mut trace_data, key_hex, input_hex) = match crypto {
             CryptoAlgorithm::Aead => {
                 // Generate random key (32 bytes for ChaCha20)
                 let key_bytes = generate_random_bytes(32);
@@ -448,7 +532,7 @@ pub fn perform_bulk_profiling_mode(stage: &Stage, crypto: &CryptoAlgorithm, num_
                 let stage_data = get_chacha20_stage_data(&key, &nonce, stage);
                 (stage_data, key_hex, nonce_hex)
             }
-            CryptoAlgorithm::Aes => {
+            CryptoAlgorithm::AesCtr => {
                 // Generate random key (16 bytes for AES)
                 let key_bytes = generate_random_bytes(LORAWAN_KEY_SIZE);
                 let mut key = [0u8; LORAWAN_KEY_SIZE];
@@ -465,7 +549,27 @@ pub fn perform_bulk_profiling_mode(stage: &Stage, crypto: &CryptoAlgorithm, num_
                 let stage_data = get_aes_stage_data(&key, &plaintext, stage);
                 (stage_data, key_hex, plaintext_hex)
             }
+            CryptoAlgorithm::AesGcm => {
+                // Generate random key (16 bytes for AES-GCM)
+                let key_bytes = generate_random_bytes(LORAWAN_KEY_SIZE);
+                let mut key = [0u8; LORAWAN_KEY_SIZE];
+                key.copy_from_slice(&key_bytes);
+                let key_hex = hex::encode(&key_bytes);
+
+                // Generate random plaintext (16 bytes for AES-GCM)
+                let plaintext_bytes = generate_random_bytes(AES_BLOCK_SIZE);
+                let mut plaintext = [0u8; AES_BLOCK_SIZE];
+                plaintext.copy_from_slice(&plaintext_bytes);
+                let plaintext_hex = hex::encode(&plaintext_bytes);
+
+                // Get stage data
+                let stage_data = get_aes_stage_data(&key, &plaintext, stage);
+                (stage_data, key_hex, plaintext_hex)
+            }
         };
+
+        // Add realistic noise to simulate real-world power analysis traces
+        add_realistic_noise_to_trace(&mut trace_data);
 
         // Format output: trace_hex,key_hex,input_hex
         let trace_hex = hex::encode(&trace_data);
