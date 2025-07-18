@@ -1,0 +1,132 @@
+[
+  {
+    "timestamp": "2025-07-08T10:51:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -88,
+    "snr": 7.0,
+    "raw_payload": "40DA1A0B260001000AEFA6777777F1CF80F5",
+    "metadata": {
+      "temperature": 21.8,
+      "humidity": 64,
+      "fcnt": 1
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:52:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -86,
+    "snr": 6.5,
+    "raw_payload": "40DA1A0B260002000A9672E664782FCD93B7",
+    "metadata": {
+      "temperature": 22.1,
+      "humidity": 64,
+      "fcnt": 2
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:53:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -84,
+    "snr": 6.0,
+    "raw_payload": "40DA1A0B260003000A9AC7570E8BA8ADA319",
+    "metadata": {
+      "temperature": 22.4,
+      "humidity": 63,
+      "fcnt": 3
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:54:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -82,
+    "snr": 5.5,
+    "raw_payload": "40DA1A0B260004000AA040F085D647663C91",
+    "metadata": {
+      "temperature": 22.7,
+      "humidity": 63,
+      "fcnt": 4
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:55:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -80,
+    "snr": 5.0,
+    "raw_payload": "40DA1A0B260005000AC426A2985236F02A90",
+    "metadata": {
+      "temperature": 23.0,
+      "humidity": 62,
+      "fcnt": 5
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:56:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -78,
+    "snr": 4.5,
+    "raw_payload": "40DA1A0B260006000AC4B765986261482677",
+    "metadata": {
+      "temperature": 23.3,
+      "humidity": 62,
+      "fcnt": 6
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:57:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -76,
+    "snr": 4.0,
+    "raw_payload": "40DA1A0B260007000A1337D5884CE7A8EA05",
+    "metadata": {
+      "temperature": 23.6,
+      "humidity": 61,
+      "fcnt": 7
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:58:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -74,
+    "snr": 3.5,
+    "raw_payload": "40DA1A0B260008000A2B02CE52130E05ADC1",
+    "metadata": {
+      "temperature": 23.9,
+      "humidity": 61,
+      "fcnt": 8
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:59:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -72,
+    "snr": 3.0,
+    "raw_payload": "40DA1A0B260009000A67A9A55F932615BBB4",
+    "metadata": {
+      "temperature": 24.2,
+      "humidity": 60,
+      "fcnt": 9
+    }
+  },
+  {
+    "timestamp": "2025-07-08T10:60:00Z",
+    "frequency": 868.1,
+    "sf": 7,
+    "rssi": -70,
+    "snr": 2.5,
+    "raw_payload": "40DA1A0B26000A000A756A51D18EA74D93A6",
+    "metadata": {
+      "temperature": 24.5,
+      "humidity": 60,
+      "fcnt": 10
+    }
+  }
+]
