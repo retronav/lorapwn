@@ -275,11 +275,13 @@ impl LoRaWanAuditor {
         if let (Some(device_ids), Some(uplink)) = (&message.end_device_ids, &message.uplink_message) {
             let device_id = &device_ids.device_id;
 
-            // Update device state
+            // Perform frame counter check BEFORE updating device state
+            findings.extend(self.check_frame_counter(device_id, uplink));
+
+            // Update device state AFTER checking frame counter
             self.update_device_state(device_id, uplink);
 
-            // Perform audits
-            findings.extend(self.check_frame_counter(device_id, uplink));
+            // Perform other audits
             findings.extend(self.check_signal_strength(device_id, uplink));
             findings.extend(self.check_payload(device_id, uplink));
             findings.extend(self.check_data_rate(device_id, uplink));
@@ -629,6 +631,14 @@ pub async fn dashboard() -> Html<&'static str> {
         .finding.low { background: #d4edda; color: #155724; }
         .status-connected { color: #28a745; font-weight: bold; }
         .status-disconnected { color: #dc3545; font-weight: bold; }
+        .payload-section { margin-top: 10px; padding: 10px; background: #f1f1f1; border-radius: 4px; }
+        .payload-item { margin: 5px 0; }
+        .payload-hex { font-family: monospace; background: #e8e8e8; padding: 2px 4px; border-radius: 4px; }
+        .payload-ascii { font-family: monospace; background: #e8e8e8; padding: 2px 4px; border-radius: 4px; }
+        .payload-json { font-family: monospace; background: #e8e8e8; padding: 8px; border-radius: 4px; white-space: pre-wrap; margin: 0; font-size: 12px; max-height: 200px; overflow-y: auto; }
+        .payload-none { color: #888; font-style: italic; }
+        .findings-section { margin-top: 15px; border-top: 1px solid #ddd; padding-top: 10px; }
+        .findings-section h4 { margin: 0 0 10px 0; color: #333; }
     </style>
 </head>
 <body>
@@ -795,6 +805,53 @@ pub async fn dashboard() -> Html<&'static str> {
                 const deviceId = packet.message.end_device_ids?.device_id || 'Unknown';
                 const timestamp = new Date(packet.processed_at).toLocaleString();
                 const fcnt = packet.message.uplink_message?.f_cnt || 'N/A';
+                const fport = packet.message.uplink_message?.f_port || 'N/A';
+
+                // Extract payload information
+                const frmPayload = packet.message.uplink_message?.frm_payload || null;
+                const decodedPayload = packet.message.uplink_message?.decoded_payload || null;
+
+                // Format payload display
+                let payloadHtml = '<div class="payload-section">';
+
+                if (frmPayload) {
+                    payloadHtml += `<div class="payload-item">
+                        <strong>Raw Payload (Hex):</strong>
+                        <code class="payload-hex">${frmPayload}</code>
+                    </div>`;
+
+                    // Convert hex to ASCII if possible
+                    try {
+                        const hexString = frmPayload.replace(/[^0-9A-Fa-f]/g, '');
+                        let ascii = '';
+                        for (let i = 0; i < hexString.length; i += 2) {
+                            const byte = parseInt(hexString.substr(i, 2), 16);
+                            ascii += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
+                        }
+                        if (ascii.replace(/\./g, '').length > 0) {
+                            payloadHtml += `<div class="payload-item">
+                                <strong>ASCII:</strong>
+                                <code class="payload-ascii">${ascii}</code>
+                            </div>`;
+                        }
+                    } catch (e) {
+                        // Ignore conversion errors
+                    }
+                }
+
+                if (decodedPayload && decodedPayload !== null) {
+                    payloadHtml += `<div class="payload-item">
+                        <strong>Decoded Payload:</strong>
+                        <pre class="payload-json">${JSON.stringify(decodedPayload, null, 2)}</pre>
+                    </div>`;
+                } else if (frmPayload) {
+                    payloadHtml += `<div class="payload-item">
+                        <strong>Decoded Payload:</strong>
+                        <span class="payload-none">No decoder configured</span>
+                    </div>`;
+                }
+
+                payloadHtml += '</div>';
 
                 const findingsHtml = packet.findings.map(finding =>
                     `<div class="finding ${finding.severity.toLowerCase()}">
@@ -808,11 +865,16 @@ pub async fn dashboard() -> Html<&'static str> {
                         <div class="packet-header">
                             <strong>Device:</strong> ${deviceId} |
                             <strong>FCnt:</strong> ${fcnt} |
+                            <strong>FPort:</strong> ${fport} |
                             <strong>Time:</strong> ${timestamp} |
                             <strong>Findings:</strong> ${packet.findings.length}
                         </div>
                         <div class="packet-body">
-                            ${packet.findings.length > 0 ? findingsHtml : '<div class="finding low">✅ No issues detected</div>'}
+                            ${payloadHtml}
+                            <div class="findings-section">
+                                <h4>Security Findings:</h4>
+                                ${packet.findings.length > 0 ? findingsHtml : '<div class="finding low">✅ No security issues detected</div>'}
+                            </div>
                         </div>
                     </div>
                 `;
