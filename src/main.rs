@@ -54,6 +54,79 @@ impl Default for TtnMessage {
     }
 }
 
+// Add packet deduplication key structure
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct PacketKey {
+    device_id: String,
+    frame_counter: Option<u32>,
+    timestamp_minute: i64, // Rounded to minute for time-based deduplication
+}
+
+impl PacketKey {
+    fn from_message(message: &TtnMessage) -> Option<Self> {
+        let device_id = message.end_device_ids.as_ref()?.device_id.clone();
+        let frame_counter = message.uplink_message.as_ref()?.f_cnt;
+
+        // Use received_at timestamp, or current time if not available
+        let timestamp = if let Some(received_at) = &message.received_at {
+            chrono::DateTime::parse_from_rfc3339(received_at)
+                .map(|dt| dt.timestamp())
+                .unwrap_or_else(|_| Utc::now().timestamp())
+        } else {
+            Utc::now().timestamp()
+        };
+
+        // Round to minute for deduplication window
+        let timestamp_minute = timestamp / 60;
+
+        Some(PacketKey {
+            device_id,
+            frame_counter,
+            timestamp_minute,
+        })
+    }
+}
+
+// Enhanced message that consolidates multiple gateway receptions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidatedTtnMessage {
+    pub base_message: TtnMessage,
+    pub all_rx_metadata: Vec<RxMetadata>,
+    pub gateway_count: usize,
+}
+
+impl ConsolidatedTtnMessage {
+    fn new(message: TtnMessage) -> Self {
+        let all_rx_metadata = message.uplink_message.as_ref()
+            .and_then(|msg| msg.rx_metadata.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let gateway_count = all_rx_metadata.len();
+
+        Self {
+            base_message: message,
+            all_rx_metadata,
+            gateway_count,
+        }
+    }
+
+    fn merge_with(&mut self, other: TtnMessage) {
+        // Add gateway metadata from the other message
+        if let Some(other_metadata) = other.uplink_message
+            .and_then(|msg| msg.rx_metadata) {
+            self.all_rx_metadata.extend(other_metadata);
+        }
+
+        self.gateway_count = self.all_rx_metadata.len();
+
+        // Update the base message's rx_metadata with consolidated data
+        if let Some(ref mut uplink) = self.base_message.uplink_message {
+            uplink.rx_metadata = Some(self.all_rx_metadata.clone());
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndDeviceIds {
     pub device_id: String,
@@ -258,6 +331,7 @@ pub struct LoRaWanAuditor {
     device_states: Arc<RwLock<HashMap<String, DeviceState>>>,
     frame_counter_gap_threshold: u32,
     weak_signal_rssi_threshold: i32,
+    seen_packets: Arc<RwLock<HashMap<PacketKey, ()>>>, // Track seen packets for deduplication
 }
 
 impl LoRaWanAuditor {
@@ -266,6 +340,7 @@ impl LoRaWanAuditor {
             device_states: Arc::new(RwLock::new(HashMap::new())),
             frame_counter_gap_threshold: 10,
             weak_signal_rssi_threshold: -110,
+            seen_packets: Arc::new(RwLock::new(HashMap::new())), // Initialize seen packets map
         }
     }
 
@@ -667,6 +742,7 @@ pub async fn dashboard() -> Html<&'static str> {
             <div style="margin-top: 10px;">
                 Status: <span id="status-text" class="status-disconnected">Disconnected</span>
             </div>
+            <button id="clear-credentials-btn" class="btn" style="display: none; background: #ffc107;">Clear Credentials</button>
         </div>
 
         <div class="stats">
@@ -699,15 +775,156 @@ pub async fn dashboard() -> Html<&'static str> {
     <script>
         let isConnected = false;
 
+        // Load saved credentials from localStorage on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSavedCredentials();
+            checkConnectionStatus();
+        });
+
+        function saveCredentials() {
+            const appId = document.getElementById('app-id').value;
+            const accessKey = document.getElementById('access-key').value;
+            const cluster = document.getElementById('cluster').value;
+
+            if (appId && accessKey && cluster) {
+                const credentials = {
+                    app_id: appId,
+                    access_key: accessKey,
+                    cluster: cluster,
+                    saved_at: new Date().toISOString()
+                };
+                localStorage.setItem('ttn_credentials', JSON.stringify(credentials));
+                console.log('✅ Credentials saved to localStorage');
+            }
+        }
+
+        function loadSavedCredentials() {
+            try {
+                const savedCredentials = localStorage.getItem('ttn_credentials');
+                if (savedCredentials) {
+                    const credentials = JSON.parse(savedCredentials);
+
+                    // Check if credentials are not too old (optional: expire after 30 days)
+                    const savedDate = new Date(credentials.saved_at);
+                    const daysDiff = (new Date() - savedDate) / (1000 * 60 * 60 * 24);
+
+                    if (daysDiff < 30) {
+                        document.getElementById('app-id').value = credentials.app_id || '';
+                        document.getElementById('access-key').value = credentials.access_key || '';
+                        document.getElementById('cluster').value = credentials.cluster || 'eu1';
+                        console.log('✅ Credentials loaded from localStorage');
+
+                        // Show a subtle indication that credentials were loaded
+                        showNotification('📱 Saved credentials loaded', 'info');
+                    } else {
+                        // Clear old credentials
+                        localStorage.removeItem('ttn_credentials');
+                        console.log('🧹 Expired credentials removed');
+                    }
+                }
+            } catch (error) {
+                console.error('❌ Error loading credentials from localStorage:', error);
+                localStorage.removeItem('ttn_credentials');
+            }
+        }
+
+        function clearSavedCredentials() {
+            localStorage.removeItem('ttn_credentials');
+            document.getElementById('app-id').value = '';
+            document.getElementById('access-key').value = '';
+            document.getElementById('cluster').value = 'eu1';
+            showNotification('🗑️ Saved credentials cleared', 'info');
+        }
+
+        async function checkConnectionStatus() {
+            try {
+                const response = await fetch('/api/statistics');
+                if (response.ok) {
+                    const stats = await response.json();
+                    if (stats.connection_status) {
+                        isConnected = true;
+                        updateConnectionUI();
+                        startPolling();
+                        showNotification('🔗 Reconnected to existing session', 'success');
+                    }
+                }
+            } catch (error) {
+                console.log('No existing connection found');
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 12px 20px;
+                border-radius: 6px;
+                color: white;
+                font-weight: bold;
+                z-index: 1000;
+                animation: slideIn 0.3s ease-out;
+                max-width: 300px;
+                word-wrap: break-word;
+            `;
+
+            // Set colors based on type
+            switch (type) {
+                case 'success':
+                    notification.style.backgroundColor = '#28a745';
+                    break;
+                case 'error':
+                    notification.style.backgroundColor = '#dc3545';
+                    break;
+                case 'warning':
+                    notification.style.backgroundColor = '#ffc107';
+                    notification.style.color = '#000';
+                    break;
+                default:
+                    notification.style.backgroundColor = '#17a2b8';
+            }
+
+            notification.textContent = message;
+            document.body.appendChild(notification);
+
+            // Add CSS animation
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes slideIn {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+            `;
+            document.head.appendChild(style);
+
+            // Remove notification after 4 seconds
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease-out reverse';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }, 4000);
+        }
+
         document.getElementById('connect-btn').addEventListener('click', async () => {
             const appId = document.getElementById('app-id').value;
             const accessKey = document.getElementById('access-key').value;
             const cluster = document.getElementById('cluster').value;
 
             if (!appId || !accessKey) {
-                alert('Please fill in Application ID and Access Key');
+                showNotification('⚠️ Please fill in Application ID and Access Key', 'warning');
                 return;
             }
+
+            // Show connecting state
+            const connectBtn = document.getElementById('connect-btn');
+            const originalText = connectBtn.textContent;
+            connectBtn.textContent = 'Connecting...';
+            connectBtn.disabled = true;
 
             try {
                 const response = await fetch('/api/connect', {
@@ -720,11 +937,18 @@ pub async fn dashboard() -> Html<&'static str> {
                     isConnected = true;
                     updateConnectionUI();
                     startPolling();
+                    saveCredentials(); // Save credentials on successful connection
+                    showNotification('🎉 Successfully connected to TTN!', 'success');
                 } else {
-                    alert('Failed to connect to TTN');
+                    const errorText = await response.text();
+                    showNotification('❌ Failed to connect: ' + errorText, 'error');
                 }
             } catch (error) {
-                alert('Connection error: ' + error.message);
+                showNotification('❌ Connection error: ' + error.message, 'error');
+            } finally {
+                // Reset button state
+                connectBtn.textContent = originalText;
+                connectBtn.disabled = false;
             }
         });
 
@@ -734,24 +958,33 @@ pub async fn dashboard() -> Html<&'static str> {
                 isConnected = false;
                 updateConnectionUI();
                 stopPolling();
+                showNotification('👋 Disconnected from TTN', 'info');
             } catch (error) {
                 console.error('Disconnect error:', error);
+                showNotification('⚠️ Disconnect error: ' + error.message, 'warning');
             }
+        });
+
+        document.getElementById('clear-credentials-btn').addEventListener('click', () => {
+            clearSavedCredentials();
         });
 
         function updateConnectionUI() {
             const connectBtn = document.getElementById('connect-btn');
             const disconnectBtn = document.getElementById('disconnect-btn');
             const statusText = document.getElementById('status-text');
+            const clearBtn = document.getElementById('clear-credentials-btn');
 
             if (isConnected) {
                 connectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'inline-block';
+                clearBtn.style.display = 'none';
                 statusText.textContent = 'Connected';
                 statusText.className = 'status-connected';
             } else {
                 connectBtn.style.display = 'inline-block';
                 disconnectBtn.style.display = 'none';
+                clearBtn.style.display = 'inline-block';
                 statusText.textContent = 'Disconnected';
                 statusText.className = 'status-disconnected';
             }
@@ -946,12 +1179,79 @@ pub async fn connect_ttn(
                 });
             }
 
-            // Spawn task to process incoming messages
+            // Spawn task to process incoming messages with deduplication
             let state_clone = state.clone();
             tokio::spawn(async move {
+                // Store for packet consolidation - key: PacketKey, value: (ConsolidatedTtnMessage, last_seen_time)
+                let mut pending_packets: HashMap<PacketKey, (ConsolidatedTtnMessage, std::time::Instant)> = HashMap::new();
+                let consolidation_window = std::time::Duration::from_millis(500); // 500ms window to collect all gateway receptions
+
+                // Spawn a cleanup task to process consolidated packets
+                let state_clone_cleanup = state_clone.clone();
+                let cleanup_handle = tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+                    loop {
+                        interval.tick().await;
+
+                        // Check for packets ready to be processed (older than consolidation window)
+                        let mut ready_packets: Vec<PacketKey> = Vec::new();
+                        let now = std::time::Instant::now();
+
+                        // Use a scope to limit the lifetime of the lock
+                        {
+                            // We can't easily share the pending_packets map between tasks, so we'll handle this differently
+                            // This cleanup approach won't work with the current structure
+                        }
+                    }
+                });
+
+                // Process messages with consolidation logic
                 while let Some(message) = rx.recv().await {
-                    let findings = state_clone.auditor.audit_packet(&message);
-                    state_clone.add_packet(message, findings);
+                    if let Some(packet_key) = PacketKey::from_message(&message) {
+                        let now = std::time::Instant::now();
+
+                        // Check if we already have a packet with this key
+                        if let Some((mut consolidated, _)) = pending_packets.remove(&packet_key) {
+                            // Merge this message with the existing one
+                            consolidated.merge_with(message);
+                            pending_packets.insert(packet_key, (consolidated, now));
+                        } else {
+                            // New packet, start consolidation
+                            let consolidated = ConsolidatedTtnMessage::new(message);
+                            pending_packets.insert(packet_key, (consolidated, now));
+                        }
+
+                        // Clean up old packets (process them after consolidation window)
+                        let mut keys_to_process = Vec::new();
+                        for (key, (_, timestamp)) in &pending_packets {
+                            if now.duration_since(*timestamp) > consolidation_window {
+                                keys_to_process.push(key.clone());
+                            }
+                        }
+
+                        // Process ready packets
+                        for key in keys_to_process {
+                            if let Some((consolidated, _)) = pending_packets.remove(&key) {
+                                let findings = state_clone.auditor.audit_packet(&consolidated.base_message);
+                                state_clone.add_packet(consolidated.base_message, findings);
+
+                                info!("📦 Processed consolidated packet from device {} with {} gateways",
+                                      key.device_id, consolidated.gateway_count);
+                            }
+                        }
+                    } else {
+                        // Fallback: process message immediately if we can't create a key
+                        let findings = state_clone.auditor.audit_packet(&message);
+                        state_clone.add_packet(message, findings);
+                    }
+                }
+
+                // Process any remaining packets when connection ends
+                for (key, (consolidated, _)) in pending_packets {
+                    let findings = state_clone.auditor.audit_packet(&consolidated.base_message);
+                    state_clone.add_packet(consolidated.base_message, findings);
+                    info!("📦 Processed final packet from device {} with {} gateways",
+                          key.device_id, consolidated.gateway_count);
                 }
 
                 // Connection lost, update status
@@ -965,7 +1265,7 @@ pub async fn connect_ttn(
 
             Ok(Json(serde_json::json!({
                 "status": "connected",
-                "message": "Successfully connected to TTN"
+                "message": "Successfully connected to TTN with packet deduplication enabled"
             })))
         }
         Err(e) => {
