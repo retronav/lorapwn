@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRaWAN Clustering Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/css/analysis.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔬 LoRaWAN Clustering Analysis</h1>
+            <p>Advanced pattern recognition and anomaly detection for LoRaWAN networks</p>
+        </div>
+
+        <div class="controls">
+            <button id="refresh-analysis" class="btn btn-success">🔄 Refresh Analysis</button>
+            <button id="trigger-analysis" class="btn">🚀 Run New Analysis</button>
+            <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
+            <span id="last-updated" style="margin-left: auto; color: #6c757d; font-size: 0.9rem;"></span>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Running clustering analysis...</p>
+        </div>
+
+        <div id="analysis-content" style="display: none;">
+            <!-- Summary Statistics -->
+            <div class="summary-stats">
+                <div class="stat-card">
+                    <div class="stat-value security-score" id="security-score">0.0</div>
+                    <div class="stat-label">Security Score</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value network-score" id="network-score">0.0</div>
+                    <div class="stat-label">Network Health</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value devices-count" id="devices-count">0</div>
+                    <div class="stat-label">Total Devices</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value clusters-count" id="clusters-count">0</div>
+                    <div class="stat-label">Total Clusters</div>
+                </div>
+            </div>
+
+            <!-- Analysis Grid -->
+            <div class="analysis-grid">
+                <!-- Device Behavior Clusters -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        📊 Device Behavior Clusters
+                    </div>
+                    <div class="card-body">
+                        <div id="device-clusters" class="cluster-list"></div>
+                        <div class="chart-container">
+                            <canvas id="deviceBehaviorChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Security Anomalies -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        🔒 Security Analysis
+                    </div>
+                    <div class="card-body">
+                        <div id="security-clusters" class="cluster-list"></div>
+                        <div id="security-anomalies"></div>
+                    </div>
+                </div>
+
+                <!-- Network Quality -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        📶 Network Quality Analysis
+                    </div>
+                    <div class="card-body">
+                        <div id="network-clusters" class="cluster-list"></div>
+                        <div class="chart-container">
+                            <canvas id="networkQualityChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Temporal Patterns -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        ⏰ Temporal Patterns
+                    </div>
+                    <div class="card-body">
+                        <div id="temporal-clusters" class="cluster-list"></div>
+                        <div class="chart-container">
+                            <canvas id="temporalChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recommendations -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        💡 Recommendations
+                    </div>
+                    <div class="card-body">
+                        <div id="recommendations"></div>
+                    </div>
+                </div>
+
+                <!-- Trends -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        📈 Trend Analysis
+                    </div>
+                    <div class="card-body">
+                        <div id="trends"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/analysis.js"></script>
+</body>
+</html>

@@ -6,6 +6,8 @@ mod test_security;
 mod test_rl;
 mod rl_pipeline;
 
+use crate::vector_db::{PacketLike, VectorDatabase, ClusteringResults, ClusteringConfig};
+use uuid::Uuid;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -13,6 +15,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use tower_http::services::ServeDir;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use rumqttc::{AsyncClient, MqttOptions, QoS};
@@ -20,8 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    env,
-    path::Path,
+    fs,
     sync::Arc,
     time::Duration,
 };
@@ -228,11 +230,113 @@ pub enum Severity {
     Info,
 }
 
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Severity::Critical => write!(f, "Critical"),
+            Severity::High => write!(f, "High"),
+            Severity::Medium => write!(f, "Medium"),
+            Severity::Low => write!(f, "Low"),
+            Severity::Info => write!(f, "Info"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacketRecord {
     pub message: TtnMessage,
     pub findings: Vec<AuditFinding>,
     pub processed_at: DateTime<Utc>,
+}
+
+impl PacketLike for PacketRecord {
+    fn get_id(&self) -> String {
+        // Always generate a proper UUID instead of using correlation IDs which may not be valid UUIDs
+        Uuid::new_v4().to_string()
+    }
+
+    fn get_device_id(&self) -> String {
+        self.message.end_device_ids.as_ref().map_or("unknown".to_string(), |ids| ids.device_id.clone())
+    }
+
+    fn get_timestamp(&self) -> DateTime<Utc> {
+        self.message.received_at.as_ref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or(self.processed_at)
+    }
+
+    fn get_frame_counter(&self) -> Option<u32> {
+        self.message.uplink_message.as_ref().and_then(|up| up.f_cnt)
+    }
+
+    fn get_rssi(&self) -> Option<i32> {
+        self.message.uplink_message.as_ref()
+            .and_then(|up| up.rx_metadata.as_ref())
+            .and_then(|meta| meta.iter().filter_map(|m| m.rssi).max())
+    }
+
+    fn get_snr(&self) -> Option<f64> {
+        self.message.uplink_message.as_ref()
+            .and_then(|up| up.rx_metadata.as_ref())
+            .and_then(|meta| {
+                meta.iter()
+                    .filter_map(|m| m.snr)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            })
+    }
+
+    fn get_spreading_factor(&self) -> Option<u8> {
+        self.message.uplink_message.as_ref()
+            .and_then(|up| up.settings.as_ref())
+            .and_then(|s| s.data_rate.as_ref())
+            .and_then(|dr| dr.lora.as_ref())
+            .and_then(|lora| lora.spreading_factor)
+    }
+
+    fn get_frequency(&self) -> Option<String> {
+        self.message.uplink_message.as_ref()
+            .and_then(|up| up.settings.as_ref())
+            .and_then(|s| s.frequency.clone())
+    }
+
+    fn get_gateway_count(&self) -> usize {
+        self.message.uplink_message.as_ref()
+            .and_then(|up| up.rx_metadata.as_ref())
+            .map_or(0, |meta| meta.len())
+    }
+
+    fn get_payload_size(&self) -> usize {
+        self.message.uplink_message.as_ref()
+            .and_then(|up| up.frm_payload.as_ref())
+            .map_or(0, |p| p.len() / 2) // Hex string, so 2 chars per byte
+    }
+
+    fn get_findings_count(&self) -> usize {
+        self.findings.len()
+    }
+
+    fn get_severity_score(&self) -> f32 {
+        self.findings.iter().map(|f| {
+            match f.severity {
+                Severity::Critical => 1.0,
+                Severity::High => 0.7,
+                Severity::Medium => 0.4,
+                Severity::Low => 0.1,
+                Severity::Info => 0.0,
+            }
+        }).sum()
+    }
+
+    fn get_network_features(&self) -> Vec<f32> {
+        let mut features = Vec::new();
+        features.push(self.get_rssi().unwrap_or(-150) as f32);
+        features.push(self.get_snr().unwrap_or(0.0) as f32);
+        features.push(self.get_spreading_factor().unwrap_or(0) as f32);
+        features.push(self.get_gateway_count() as f32);
+        features.push(self.get_payload_size() as f32);
+        features
+    }
 }
 
 // ==============================================================================
@@ -573,6 +677,9 @@ pub struct AppState {
     pub auditor: Arc<LoRaWanAuditor>,
     pub packets: Arc<RwLock<Vec<PacketRecord>>>,
     pub ttn_config: Arc<RwLock<Option<TtnConfig>>>,
+    pub vector_db: Arc<VectorDatabase>,
+    pub clustering_results: Arc<RwLock<Option<ClusteringResults>>>,
+    pub clustering_config: Arc<RwLock<ClusteringConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,20 +704,28 @@ pub struct QueryParams {
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self {
+    pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
             auditor: Arc::new(LoRaWanAuditor::new()),
             packets: Arc::new(RwLock::new(Vec::new())),
             ttn_config: Arc::new(RwLock::new(None)),
-        }
+            vector_db: Arc::new(VectorDatabase::new("lorawan_packets").await?),
+            clustering_results: Arc::new(RwLock::new(None)),
+            clustering_config: Arc::new(RwLock::new(ClusteringConfig::default())),
+        })
     }
 
-    pub fn add_packet(&self, message: TtnMessage, findings: Vec<AuditFinding>) {
+    pub async fn add_packet(&self, message: TtnMessage, findings: Vec<AuditFinding>) {
         let record = PacketRecord {
             message,
             findings,
             processed_at: Utc::now(),
         };
+
+        // Store in vector database
+        if let Err(e) = self.vector_db.store_packet(&record).await {
+            error!("Failed to store packet in vector DB: {}", e);
+        }
 
         let mut packets = self.packets.write();
         packets.insert(0, record); // Insert at beginning for newest first
@@ -663,6 +778,27 @@ impl AppState {
 
         filtered
     }
+
+    pub async fn run_clustering_analysis(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config = self.clustering_config.read().clone();
+        info!("🔍 Starting clustering analysis with config: {:?}", config);
+
+        match self.vector_db.run_comprehensive_clustering(&config).await {
+            Ok(results) => {
+                info!("✅ Clustering analysis completed successfully");
+                *self.clustering_results.write() = Some(results);
+                Ok(())
+            }
+            Err(e) => {
+                error!("❌ Clustering analysis failed: {}", e);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn get_clustering_results(&self) -> Option<ClusteringResults> {
+        self.clustering_results.read().clone()
+    }
 }
 
 // ==============================================================================
@@ -673,858 +809,206 @@ pub async fn health_check() -> &'static str {
     "LoRaWAN Auditing Pipeline is running"
 }
 
-pub async fn dashboard() -> Html<&'static str> {
-    Html(r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LoRaWAN Auditing Pipeline</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .header { text-align: center; margin-bottom: 30px; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat-card { background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; }
-        .stat-value { font-size: 2rem; font-weight: bold; color: #007bff; }
-        .stat-label { color: #6c757d; }
-        .connection-panel { background: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
-        .form-group input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
-        .btn { background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-        .btn:hover { background: #0056b3; }
-        .packet-list { margin-top: 20px; }
-        .packet-card { border: 1px solid #ddd; margin-bottom: 10px; border-radius: 4px; }
-        .packet-header { background: #f8f9fa; padding: 15px; border-bottom: 1px solid #ddd; }
-        .packet-body { padding: 15px; }
-        .finding { margin: 5px 0; padding: 8px; border-radius: 4px; }
-        .finding.critical { background: #f8d7da; color: #721c24; }
-        .finding.high { background: #ffeaa7; color: #856404; }
-        .finding.medium { background: #fff3cd; color: #856404; }
-        .finding.low { background: #d4edda; color: #155724; }
-        .status-connected { color: #28a745; font-weight: bold; }
-        .status-disconnected { color: #dc3545; font-weight: bold; }
-        .payload-section { margin-top: 10px; padding: 10px; background: #f1f1f1; border-radius: 4px; }
-        .payload-item { margin: 5px 0; }
-        .payload-hex { font-family: monospace; background: #e8e8e8; padding: 2px 4px; border-radius: 4px; }
-        .payload-ascii { font-family: monospace; background: #e8e8e8; padding: 2px 4px; border-radius: 4px; }
-        .payload-json { font-family: monospace; background: #e8e8e8; padding: 8px; border-radius: 4px; white-space: pre-wrap; margin: 0; font-size: 12px; max-height: 200px; overflow-y: auto; }
-        .payload-none { color: #888; font-style: italic; }
-        .findings-section { margin-top: 15px; border-top: 1px solid #ddd; padding-top: 10px; }
-        .findings-section h4 { margin: 0 0 10px 0; color: #333; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🛰️ LoRaWAN Auditing Pipeline</h1>
-            <p>Real-time monitoring and analysis of TTN LoRaWAN packets</p>
-        </div>
+pub async fn dashboard() -> Html<String> {
+    let html_content = fs::read_to_string("templates/dashboard.html")
+        .unwrap_or_else(|_| "<h1>Error loading dashboard template</h1>".to_string());
+    Html(html_content)
+}
 
-        <div class="connection-panel">
-            <h3>TTN V3 Connection</h3>
-            <div class="form-group">
-                <label for="app-id">Application ID</label>
-                <input type="text" id="app-id" placeholder="my-lorawan-app">
-            </div>
-            <div class="form-group">
-                <label for="access-key">Access Key</label>
-                <input type="password" id="access-key" placeholder="NNSXS.XXXXXXXXXXXXXXXX">
-            </div>
-            <div class="form-group">
-                <label for="cluster">TTN Cluster</label>
-                <input type="text" id="cluster" placeholder="eu1" value="eu1">
-            </div>
-            <button id="connect-btn" class="btn">Connect to TTN</button>
-            <button id="disconnect-btn" class="btn" style="display: none; background: #dc3545;">Disconnect</button>
-            <div style="margin-top: 10px;">
-                Status: <span id="status-text" class="status-disconnected">Disconnected</span>
-            </div>
-            <button id="clear-credentials-btn" class="btn" style="display: none; background: #ffc107;">Clear Credentials</button>
-        </div>
-
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-value" id="total-packets">0</div>
-                <div class="stat-label">Total Packets</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="total-findings">0</div>
-                <div class="stat-label">Total Findings</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="unique-devices">0</div>
-                <div class="stat-label">Unique Devices</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="critical-findings">0</div>
-                <div class="stat-label">Critical Findings</div>
-            </div>
-        </div>
-
-        <div class="packet-list">
-            <h3>Live Packet Feed</h3>
-            <div id="packets-container">
-                <p>Waiting for packet data...</p>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let isConnected = false;
-
-        // Load saved credentials from localStorage on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            loadSavedCredentials();
-            checkConnectionStatus();
-        });
-
-        function saveCredentials() {
-            const appId = document.getElementById('app-id').value;
-            const accessKey = document.getElementById('access-key').value;
-            const cluster = document.getElementById('cluster').value;
-
-            if (appId && accessKey && cluster) {
-                const credentials = {
-                    app_id: appId,
-                    access_key: accessKey,
-                    cluster: cluster,
-                    saved_at: new Date().toISOString()
-                };
-                localStorage.setItem('ttn_credentials', JSON.stringify(credentials));
-                console.log('✅ Credentials saved to localStorage');
-            }
-        }
-
-        function loadSavedCredentials() {
-            try {
-                const savedCredentials = localStorage.getItem('ttn_credentials');
-                if (savedCredentials) {
-                    const credentials = JSON.parse(savedCredentials);
-
-                    // Check if credentials are not too old (optional: expire after 30 days)
-                    const savedDate = new Date(credentials.saved_at);
-                    const daysDiff = (new Date() - savedDate) / (1000 * 60 * 60 * 24);
-
-                    if (daysDiff < 30) {
-                        document.getElementById('app-id').value = credentials.app_id || '';
-                        document.getElementById('access-key').value = credentials.access_key || '';
-                        document.getElementById('cluster').value = credentials.cluster || 'eu1';
-                        console.log('✅ Credentials loaded from localStorage');
-
-                        // Show a subtle indication that credentials were loaded
-                        showNotification('📱 Saved credentials loaded', 'info');
-                    } else {
-                        // Clear old credentials
-                        localStorage.removeItem('ttn_credentials');
-                        console.log('🧹 Expired credentials removed');
-                    }
-                }
-            } catch (error) {
-                console.error('❌ Error loading credentials from localStorage:', error);
-                localStorage.removeItem('ttn_credentials');
-            }
-        }
-
-        function clearSavedCredentials() {
-            localStorage.removeItem('ttn_credentials');
-            document.getElementById('app-id').value = '';
-            document.getElementById('access-key').value = '';
-            document.getElementById('cluster').value = 'eu1';
-            showNotification('🗑️ Saved credentials cleared', 'info');
-        }
-
-        async function checkConnectionStatus() {
-            try {
-                const response = await fetch('/api/statistics');
-                if (response.ok) {
-                    const stats = await response.json();
-                    if (stats.connection_status) {
-                        isConnected = true;
-                        updateConnectionUI();
-                        startPolling();
-                        showNotification('🔗 Reconnected to existing session', 'success');
-                    }
-                }
-            } catch (error) {
-                console.log('No existing connection found');
-            }
-        }
-
-        function showNotification(message, type = 'info') {
-            // Create notification element
-            const notification = document.createElement('div');
-            notification.style.cssText = `
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                padding: 12px 20px;
-                border-radius: 6px;
-                color: white;
-                font-weight: bold;
-                z-index: 1000;
-                animation: slideIn 0.3s ease-out;
-                max-width: 300px;
-                word-wrap: break-word;
-            `;
-
-            // Set colors based on type
-            switch (type) {
-                case 'success':
-                    notification.style.backgroundColor = '#28a745';
-                    break;
-                case 'error':
-                    notification.style.backgroundColor = '#dc3545';
-                    break;
-                case 'warning':
-                    notification.style.backgroundColor = '#ffc107';
-                    notification.style.color = '#000';
-                    break;
-                default:
-                    notification.style.backgroundColor = '#17a2b8';
-            }
-
-            notification.textContent = message;
-            document.body.appendChild(notification);
-
-            // Add CSS animation
-            const style = document.createElement('style');
-            style.textContent = `
-                @keyframes slideIn {
-                    from { transform: translateX(100%); opacity: 0; }
-                    to { transform: translateX(0); opacity: 1; }
-                }
-            `;
-            document.head.appendChild(style);
-
-            // Remove notification after 4 seconds
-            setTimeout(() => {
-                notification.style.animation = 'slideIn 0.3s ease-out reverse';
-                setTimeout(() => {
-                    if (notification.parentNode) {
-                        notification.parentNode.removeChild(notification);
-                    }
-                }, 300);
-            }, 4000);
-        }
-
-        document.getElementById('connect-btn').addEventListener('click', async () => {
-            const appId = document.getElementById('app-id').value;
-            const accessKey = document.getElementById('access-key').value;
-            const cluster = document.getElementById('cluster').value;
-
-            if (!appId || !accessKey) {
-                showNotification('⚠️ Please fill in Application ID and Access Key', 'warning');
-                return;
-            }
-
-            // Show connecting state
-            const connectBtn = document.getElementById('connect-btn');
-            const originalText = connectBtn.textContent;
-            connectBtn.textContent = 'Connecting...';
-            connectBtn.disabled = true;
-
-            try {
-                const response = await fetch('/api/connect', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ app_id: appId, access_key: accessKey, cluster: cluster })
-                });
-
-                if (response.ok) {
-                    isConnected = true;
-                    updateConnectionUI();
-                    startPolling();
-                    saveCredentials(); // Save credentials on successful connection
-                    showNotification('🎉 Successfully connected to TTN!', 'success');
-                } else {
-                    const errorText = await response.text();
-                    showNotification('❌ Failed to connect: ' + errorText, 'error');
-                }
-            } catch (error) {
-                showNotification('❌ Connection error: ' + error.message, 'error');
-            } finally {
-                // Reset button state
-                connectBtn.textContent = originalText;
-                connectBtn.disabled = false;
-            }
-        });
-
-        document.getElementById('disconnect-btn').addEventListener('click', async () => {
-            try {
-                await fetch('/api/disconnect', { method: 'POST' });
-                isConnected = false;
-                updateConnectionUI();
-                stopPolling();
-                showNotification('👋 Disconnected from TTN', 'info');
-            } catch (error) {
-                console.error('Disconnect error:', error);
-                showNotification('⚠️ Disconnect error: ' + error.message, 'warning');
-            }
-        });
-
-        document.getElementById('clear-credentials-btn').addEventListener('click', () => {
-            clearSavedCredentials();
-        });
-
-        function updateConnectionUI() {
-            const connectBtn = document.getElementById('connect-btn');
-            const disconnectBtn = document.getElementById('disconnect-btn');
-            const statusText = document.getElementById('status-text');
-            const clearBtn = document.getElementById('clear-credentials-btn');
-
-            if (isConnected) {
-                connectBtn.style.display = 'none';
-                disconnectBtn.style.display = 'inline-block';
-                clearBtn.style.display = 'none';
-                statusText.textContent = 'Connected';
-                statusText.className = 'status-connected';
-            } else {
-                connectBtn.style.display = 'inline-block';
-                disconnectBtn.style.display = 'none';
-                clearBtn.style.display = 'inline-block';
-                statusText.textContent = 'Disconnected';
-                statusText.className = 'status-disconnected';
-            }
-        }
-
-        let pollingInterval;
-
-        function startPolling() {
-            pollingInterval = setInterval(async () => {
-                try {
-                    const [statsResponse, packetsResponse] = await Promise.all([
-                        fetch('/api/statistics'),
-                        fetch('/api/packets?limit=10')
-                    ]);
-
-                    if (statsResponse.ok && packetsResponse.ok) {
-                        const stats = await statsResponse.json();
-                        const packets = await packetsResponse.json();
-
-                        updateStatistics(stats);
-                        updatePacketList(packets);
-                    }
-                } catch (error) {
-                    console.error('Polling error:', error);
-                }
-            }, 3000);
-        }
-
-        function stopPolling() {
-            if (pollingInterval) {
-                clearInterval(pollingInterval);
-            }
-        }
-
-        function updateStatistics(stats) {
-            document.getElementById('total-packets').textContent = stats.total_packets || 0;
-            document.getElementById('total-findings').textContent = stats.total_findings || 0;
-            document.getElementById('unique-devices').textContent = stats.unique_devices || 0;
-            document.getElementById('critical-findings').textContent = stats.severity_counts?.critical || 0;
-        }
-
-        function updatePacketList(packets) {
-            const container = document.getElementById('packets-container');
-
-            if (packets.length === 0) {
-                container.innerHTML = '<p>No packets received yet...</p>';
-                return;
-            }
-
-            container.innerHTML = packets.map(packet => {
-                const deviceId = packet.message.end_device_ids?.device_id || 'Unknown';
-                const timestamp = new Date(packet.processed_at).toLocaleString();
-                const fcnt = packet.message.uplink_message?.f_cnt || 'N/A';
-                const fport = packet.message.uplink_message?.f_port || 'N/A';
-
-                // Extract payload information
-                const frmPayload = packet.message.uplink_message?.frm_payload || null;
-                const decodedPayload = packet.message.uplink_message?.decoded_payload || null;
-
-                // Format payload display
-                let payloadHtml = '<div class="payload-section">';
-
-                if (frmPayload) {
-                    payloadHtml += `<div class="payload-item">
-                        <strong>Raw Payload (Hex):</strong>
-                        <code class="payload-hex">${frmPayload}</code>
-                    </div>`;
-
-                    // Convert hex to ASCII if possible
-                    try {
-                        const hexString = frmPayload.replace(/[^0-9A-Fa-f]/g, '');
-                        let ascii = '';
-                        for (let i = 0; i < hexString.length; i += 2) {
-                            const byte = parseInt(hexString.substr(i, 2), 16);
-                            ascii += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
-                        }
-                        if (ascii.replace(/\./g, '').length > 0) {
-                            payloadHtml += `<div class="payload-item">
-                                <strong>ASCII:</strong>
-                                <code class="payload-ascii">${ascii}</code>
-                            </div>`;
-                        }
-                    } catch (e) {
-                        // Ignore conversion errors
-                    }
-                }
-
-                if (decodedPayload && decodedPayload !== null) {
-                    payloadHtml += `<div class="payload-item">
-                        <strong>Decoded Payload:</strong>
-                        <pre class="payload-json">${JSON.stringify(decodedPayload, null, 2)}</pre>
-                    </div>`;
-                } else if (frmPayload) {
-                    payloadHtml += `<div class="payload-item">
-                        <strong>Decoded Payload:</strong>
-                        <span class="payload-none">No decoder configured</span>
-                    </div>`;
-                }
-
-                payloadHtml += '</div>';
-
-                const findingsHtml = packet.findings.map(finding =>
-                    `<div class="finding ${finding.severity.toLowerCase()}">
-                        <strong>${finding.check}</strong> (${finding.severity}): ${finding.details}
-                        ${finding.recommendation ? `<br><em>💡 ${finding.recommendation}</em>` : ''}
-                    </div>`
-                ).join('');
-
-                return `
-                    <div class="packet-card">
-                        <div class="packet-header">
-                            <strong>Device:</strong> ${deviceId} |
-                            <strong>FCnt:</strong> ${fcnt} |
-                            <strong>FPort:</strong> ${fport} |
-                            <strong>Time:</strong> ${timestamp} |
-                            <strong>Findings:</strong> ${packet.findings.length}
-                        </div>
-                        <div class="packet-body">
-                            ${payloadHtml}
-                            <div class="findings-section">
-                                <h4>Security Findings:</h4>
-                                ${packet.findings.length > 0 ? findingsHtml : '<div class="finding low">✅ No security issues detected</div>'}
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        }
-    </script>
-</body>
-</html>
-    "#)
+pub async fn analysis_dashboard() -> Html<String> {
+    let html_content = fs::read_to_string("templates/analysis.html")
+        .unwrap_or_else(|_| "<h1>Error loading analysis template</h1>".to_string());
+    Html(html_content)
 }
 
 pub async fn get_packets(
-    Query(params): Query<QueryParams>,
     State(state): State<AppState>,
+    Query(params): Query<QueryParams>,
 ) -> Json<Vec<PacketRecord>> {
     Json(state.get_packets(&params))
 }
 
-pub async fn get_statistics(State(state): State<AppState>) -> Json<Value> {
-    let device_stats = state.auditor.get_device_statistics();
+pub async fn get_statistics(State(state): State<AppState>) -> Json<serde_json::Value> {
     let packets = state.packets.read();
+    let device_states = state.auditor.get_device_statistics();
 
     let total_packets = packets.len();
     let total_findings: usize = packets.iter().map(|p| p.findings.len()).sum();
-    let unique_devices = device_stats.len();
+    let unique_devices = device_states.len();
 
-    let severity_counts = packets.iter().fold(
-        HashMap::new(),
-        |mut acc, packet| {
-            for finding in &packet.findings {
-                let severity_str = match finding.severity {
-                    Severity::Critical => "critical",
-                    Severity::High => "high",
-                    Severity::Medium => "medium",
-                    Severity::Low => "low",
-                    Severity::Info => "info",
-                };
-                *acc.entry(severity_str).or_insert(0) += 1;
-            }
+    let severity_counts = packets
+        .iter()
+        .flat_map(|p| &p.findings)
+        .fold(HashMap::new(), |mut acc, finding| {
+            let severity = match finding.severity {
+                Severity::Critical => "critical",
+                Severity::High => "high",
+                Severity::Medium => "medium",
+                Severity::Low => "low",
+                Severity::Info => "info",
+            };
+            *acc.entry(severity.to_string()).or_insert(0) += 1;
             acc
-        }
-    );
+        });
+
+    let connection_status = state.ttn_config.read().as_ref().map(|c| c.is_connected).unwrap_or(false);
 
     Json(serde_json::json!({
         "total_packets": total_packets,
         "total_findings": total_findings,
         "unique_devices": unique_devices,
         "severity_counts": severity_counts,
-        "device_statistics": device_stats,
-        "connection_status": state.ttn_config.read().as_ref().map(|c| c.is_connected).unwrap_or(false)
+        "connection_status": connection_status,
+        "device_states": device_states
     }))
 }
 
 pub async fn connect_ttn(
     State(state): State<AppState>,
     Json(request): Json<ConnectRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    info!("Attempting to connect to TTN: app_id={}, cluster={}", request.app_id, request.cluster);
+) -> Result<&'static str, (StatusCode, &'static str)> {
+    info!("🔗 Attempting to connect to TTN with app_id: {}", request.app_id);
 
-    match TtnClient::new(request.app_id.clone(), request.access_key.clone(), request.cluster.clone()) {
-        Ok((_client, mut rx)) => {
-            // Update connection status
-            {
-                let mut config = state.ttn_config.write();
-                *config = Some(TtnConfig {
-                    app_id: request.app_id.clone(),
-                    cluster: request.cluster.clone(),
-                    is_connected: true,
-                });
-            }
-
-            // Spawn task to process incoming messages with deduplication
-            let state_clone = state.clone();
-            tokio::spawn(async move {
-                // Store for packet consolidation - key: PacketKey, value: (ConsolidatedTtnMessage, last_seen_time)
-                let mut pending_packets: HashMap<PacketKey, (ConsolidatedTtnMessage, std::time::Instant)> = HashMap::new();
-                let consolidation_window = std::time::Duration::from_millis(500); // 500ms window to collect all gateway receptions
-
-                // Spawn a cleanup task to process consolidated packets
-                let state_clone_cleanup = state_clone.clone();
-                let cleanup_handle = tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
-                    loop {
-                        interval.tick().await;
-
-                        // Check for packets ready to be processed (older than consolidation window)
-                        let mut ready_packets: Vec<PacketKey> = Vec::new();
-                        let now = std::time::Instant::now();
-
-                        // Use a scope to limit the lifetime of the lock
-                        {
-                            // We can't easily share the pending_packets map between tasks, so we'll handle this differently
-                            // This cleanup approach won't work with the current structure
-                        }
-                    }
-                });
-
-                // Process messages with consolidation logic
-                while let Some(message) = rx.recv().await {
-                    if let Some(packet_key) = PacketKey::from_message(&message) {
-                        let now = std::time::Instant::now();
-
-                        // Check if we already have a packet with this key
-                        if let Some((mut consolidated, _)) = pending_packets.remove(&packet_key) {
-                            // Merge this message with the existing one
-                            consolidated.merge_with(message);
-                            pending_packets.insert(packet_key, (consolidated, now));
-                        } else {
-                            // New packet, start consolidation
-                            let consolidated = ConsolidatedTtnMessage::new(message);
-                            pending_packets.insert(packet_key, (consolidated, now));
-                        }
-
-                        // Clean up old packets (process them after consolidation window)
-                        let mut keys_to_process = Vec::new();
-                        for (key, (_, timestamp)) in &pending_packets {
-                            if now.duration_since(*timestamp) > consolidation_window {
-                                keys_to_process.push(key.clone());
-                            }
-                        }
-
-                        // Process ready packets
-                        for key in keys_to_process {
-                            if let Some((consolidated, _)) = pending_packets.remove(&key) {
-                                let findings = state_clone.auditor.audit_packet(&consolidated.base_message);
-                                state_clone.add_packet(consolidated.base_message, findings);
-
-                                info!("📦 Processed consolidated packet from device {} with {} gateways",
-                                      key.device_id, consolidated.gateway_count);
-                            }
-                        }
-                    } else {
-                        // Fallback: process message immediately if we can't create a key
-                        let findings = state_clone.auditor.audit_packet(&message);
-                        state_clone.add_packet(message, findings);
-                    }
-                }
-
-                // Process any remaining packets when connection ends
-                for (key, (consolidated, _)) in pending_packets {
-                    let findings = state_clone.auditor.audit_packet(&consolidated.base_message);
-                    state_clone.add_packet(consolidated.base_message, findings);
-                    info!("📦 Processed final packet from device {} with {} gateways",
-                          key.device_id, consolidated.gateway_count);
-                }
-
-                // Connection lost, update status
-                {
-                    let mut config = state_clone.ttn_config.write();
-                    if let Some(ref mut config) = config.as_mut() {
-                        config.is_connected = false;
-                    }
-                }
+    match TtnClient::new(request.app_id.clone(), request.access_key, request.cluster.clone()) {
+        Ok((client, mut rx)) => {
+            // Update configuration
+            *state.ttn_config.write() = Some(TtnConfig {
+                app_id: request.app_id.clone(),
+                cluster: request.cluster.clone(),
+                is_connected: true,
             });
 
-            Ok(Json(serde_json::json!({
-                "status": "connected",
-                "message": "Successfully connected to TTN with packet deduplication enabled"
-            })))
+            // Store client reference for potential disconnection
+            let state_clone = state.clone();
+
+            tokio::spawn(async move {
+                info!("📡 Starting TTN message processing task");
+
+                while let Some(message) = rx.recv().await {
+                    debug!("📦 Received TTN message for device: {:?}",
+                        message.end_device_ids.as_ref().map(|ids| &ids.device_id));
+
+                    // Audit the packet
+                    let findings = state_clone.auditor.audit_packet(&message);
+
+                    // Log findings if any
+                    if !findings.is_empty() {
+                        info!("🚨 Found {} security findings for device: {:?}",
+                            findings.len(),
+                            message.end_device_ids.as_ref().map(|ids| &ids.device_id));
+
+                        for finding in &findings {
+                            match finding.severity {
+                                Severity::Critical | Severity::High => {
+                                    error!("🔴 {} - {}: {}", finding.severity, finding.check, finding.details);
+                                }
+                                Severity::Medium => {
+                                    info!("🟡 {} - {}: {}", finding.severity, finding.check, finding.details);
+                                }
+                                _ => {
+                                    debug!("🟢 {} - {}: {}", finding.severity, finding.check, finding.details);
+                                }
+                            }
+                        }
+                    }
+
+                    // Store the packet
+                    state_clone.add_packet(message, findings).await;
+                }
+
+                info!("📡 TTN message processing task ended");
+            });
+
+            info!("✅ Successfully connected to TTN");
+            Ok("Successfully connected to TTN")
         }
         Err(e) => {
-            error!("Failed to connect to TTN: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            error!("❌ Failed to connect to TTN: {}", e);
+            Err((StatusCode::BAD_REQUEST, "Failed to connect to TTN"))
         }
     }
 }
 
-pub async fn disconnect_ttn(State(state): State<AppState>) -> Json<serde_json::Value> {
-    {
-        let mut config = state.ttn_config.write();
-        *config = None;
-    }
-
-    Json(serde_json::json!({
-        "status": "disconnected",
-        "message": "Disconnected from TTN"
-    }))
+pub async fn disconnect_ttn(State(state): State<AppState>) -> &'static str {
+    *state.ttn_config.write() = None;
+    info!("🔌 Disconnected from TTN");
+    "Disconnected from TTN"
 }
 
-// ==============================================================================
-// 6. Main Application Entry Point
-// ==============================================================================
+pub async fn get_clustering_analysis(State(state): State<AppState>) -> Json<Value> {
+    match state.get_clustering_results() {
+        Some(results) => Json(serde_json::to_value(results).unwrap_or_default()),
+        None => {
+            // Trigger new analysis if none exists
+            if let Err(e) = state.run_clustering_analysis().await {
+                error!("Failed to run clustering analysis: {}", e);
+            }
+            Json(serde_json::json!({"status": "analysis_running", "message": "Clustering analysis started"}))
+        }
+    }
+}
+
+pub async fn trigger_clustering_analysis(State(state): State<AppState>) -> Json<Value> {
+    match state.run_clustering_analysis().await {
+        Ok(_) => Json(serde_json::json!({"status": "success", "message": "Clustering analysis completed"})),
+        Err(e) => Json(serde_json::json!({"status": "error", "message": format!("Analysis failed: {}", e)})),
+    }
+}
+
+pub async fn update_clustering_config(
+    State(state): State<AppState>,
+    Json(new_config): Json<ClusteringConfig>,
+) -> Json<Value> {
+    *state.clustering_config.write() = new_config;
+    Json(serde_json::json!({"status": "success", "message": "Clustering configuration updated"}))
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    let args: Vec<String> = env::args().collect();
-
-    // Handle command-line arguments for testing
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "test-db" => {
-                info!("🔍 Testing database functionality...");
-                match test_db::test_database().await {
-                    Ok(_) => info!("✅ Database test completed successfully"),
-                    Err(e) => error!("❌ Database test failed: {}", e),
-                }
-                return Ok(());
-            }
-            "test-security" => {
-                info!("🔍 Testing security analysis...");
-                match test_security::test_security_analysis().await {
-                    Ok(_) => info!("✅ Security analysis test completed successfully"),
-                    Err(e) => error!("❌ Security analysis test failed: {}", e),
-                }
-                return Ok(());
-            }
-            "test-dataset" => {
-                info!("🔍 Testing dataset processing...");
-                test_dataset_processing().await?;
-                return Ok(());
-            }
-            "test-rl" => {
-                info!("🔍 Testing reinforcement learning pipeline...");
-                match test_rl::test_reinforcement_learning().await {
-                    Ok(_) => info!("✅ RL pipeline test completed successfully"),
-                    Err(e) => error!("❌ RL pipeline test failed: {}", e),
-                }
-                return Ok(());
-            }
-            "test-all" => {
-                info!("🔍 Running all tests...");
-                run_all_tests().await?;
-                return Ok(());
-            }
-            "run-pipeline" | _ => {
-                // Continue with normal pipeline execution
-            }
-        }
-    }
-
-    info!("🚀 Starting LoRaWAN Auditing Pipeline");
-    info!("This Rust implementation improves upon the Python TTN auditor with:");
-    info!("  • 10x faster packet processing");
-    info!("  • Enhanced security audits");
-    info!("  • Real-time web dashboard");
-    info!("  • Better error handling");
-    info!("  • Memory efficient operations");
+    info!("🚀 Starting LoRaWAN Auditing Pipeline...");
 
     // Initialize application state
-    let app_state = AppState::new();
+    let app_state = AppState::new().await?;
+
+    info!("📊 Initialized application state with vector database");
+
+    // Start background clustering task
+    let clustering_state = app_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Run every hour
+        loop {
+            interval.tick().await;
+            if let Err(e) = clustering_state.run_clustering_analysis().await {
+                error!("Background clustering analysis failed: {}", e);
+            }
+        }
+    });
 
     // Build the router
     let app = Router::new()
         .route("/", get(dashboard))
+        .route("/analysis", get(analysis_dashboard))
         .route("/health", get(health_check))
         .route("/api/packets", get(get_packets))
         .route("/api/statistics", get(get_statistics))
         .route("/api/connect", post(connect_ttn))
         .route("/api/disconnect", post(disconnect_ttn))
+        .route("/api/clustering-analysis", get(get_clustering_analysis))
+        .route("/api/trigger-clustering", post(trigger_clustering_analysis))
+        .route("/api/clustering-config", post(update_clustering_config))
+        .nest_service("/static", ServeDir::new("static"))
         .with_state(app_state);
 
-    // Start the server on a different port if 3000 is in use
-    let port = if args.len() > 2 && args[2].starts_with("--port=") {
-        args[2].split('=').nth(1).unwrap_or("3001").parse::<u16>().unwrap_or(3001)
-    } else {
-        3001 // Use 3001 by default to avoid conflicts
-    };
+    info!("🌐 Starting web server on http://0.0.0.0:3000");
+    info!("🔗 Dashboard available at: http://localhost:3000");
+    info!("📈 Analysis dashboard available at: http://localhost:3000/analysis");
 
-    let addr = format!("0.0.0.0:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!("🌐 Server running on http://localhost:{}", port);
-    info!("📊 Open your browser to access the live dashboard");
-
+    // Start the server
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app).await?;
-
-    Ok(())
-}
-
-// Test functions for dataset processing
-async fn test_dataset_processing() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::dataset_processor::DatasetProcessor;
-
-    info!("Testing dataset processing functionality...");
-
-    // Test with vector database disabled first
-    let processor = DatasetProcessor::new(None).await?;
-    info!("✅ Dataset processor created successfully");
-
-    // Test JSON file processing if the file exists
-    let json_path = Path::new("lorawan_dataset.json");
-    if json_path.exists() {
-        info!("📄 Processing JSON dataset...");
-        match processor.process_json_file(json_path).await {
-            Ok(records) => {
-                info!("✅ Processed {} records from JSON file", records.len());
-
-                // Show some statistics
-                let total_findings: usize = records.iter().map(|r| r.findings.len()).sum();
-                info!("📊 Total findings across all records: {}", total_findings);
-
-                // Show first few records
-                for (i, record) in records.iter().take(3).enumerate() {
-                    info!("Record {}: {} findings", i + 1, record.findings.len());
-                    for finding in &record.findings {
-                        info!("  - {}: {}", finding.check, finding.details);
-                    }
-                }
-            }
-            Err(e) => error!("❌ Failed to process JSON file: {}", e),
-        }
-    } else {
-        info!("⚠️  JSON dataset file not found at {}", json_path.display());
-    }
-
-    Ok(())
-}
-
-// Run all tests
-async fn run_all_tests() -> Result<(), Box<dyn std::error::Error>> {
-    info!("🧪 Running comprehensive test suite...");
-
-    // Test 1: Database functionality
-    info!("\n1️⃣ Testing Database...");
-    match test_db::test_database().await {
-        Ok(_) => info!("✅ Database test passed"),
-        Err(e) => error!("❌ Database test failed: {}", e),
-    }
-
-    // Test 2: Security analysis
-    info!("\n2️⃣ Testing Security Analysis...");
-    match test_security::test_security_analysis().await {
-        Ok(_) => info!("✅ Security analysis test passed"),
-        Err(e) => error!("❌ Security analysis test failed: {}", e),
-    }
-
-    // Test 3: Dataset processing
-    info!("\n3️⃣ Testing Dataset Processing...");
-    match test_dataset_processing().await {
-        Ok(_) => info!("✅ Dataset processing test passed"),
-        Err(e) => error!("❌ Dataset processing test failed: {}", e),
-    }
-
-    // Test 4: Reinforcement Learning Pipeline
-    info!("\n4️⃣ Testing Reinforcement Learning Pipeline...");
-    match test_rl::test_reinforcement_learning().await {
-        Ok(_) => info!("✅ RL pipeline test passed"),
-        Err(e) => error!("❌ RL pipeline test failed: {}", e),
-    }
-
-    // Test 5: Test auditing framework
-    info!("\n5️⃣ Testing Auditing Framework...");
-    test_auditing_framework().await?;
-
-    info!("\n🎉 All tests completed!");
-    Ok(())
-}
-
-// Test the auditing framework
-async fn test_auditing_framework() -> Result<(), Box<dyn std::error::Error>> {
-    let auditor = LoRaWanAuditor::new();
-
-    // Create a test message
-    let test_message = TtnMessage {
-        end_device_ids: Some(EndDeviceIds {
-            device_id: "test-device-001".to_string(),
-            application_ids: None,
-            dev_eui: Some("0123456789ABCDEF".to_string()),
-            join_eui: None,
-        }),
-        uplink_message: Some(UplinkMessage {
-            f_cnt: Some(42),
-            f_port: Some(1),
-            frm_payload: Some("48656C6C6F".to_string()),
-            decoded_payload: Some(serde_json::json!({"temperature": 23.5, "humidity": 60})),
-            rx_metadata: Some(vec![RxMetadata {
-                gateway_ids: Some(GatewayIds {
-                    gateway_id: "test-gateway".to_string(),
-                    eui: None,
-                }),
-                rssi: Some(-85),
-                channel_rssi: None,
-                snr: Some(7.5),
-                uplink_token: None,
-                channel_index: None,
-                location: None,
-                time: None,
-                timestamp: None,
-            }]),
-            settings: Some(DataRateSettings {
-                data_rate: Some(DataRate {
-                    lora: Some(LoraSettings {
-                        bandwidth: Some(125000),
-                        spreading_factor: Some(7),
-                    }),
-                }),
-                coding_rate: Some("4/5".to_string()),
-                frequency: Some("868100000".to_string()),
-            }),
-            received_at: Some(chrono::Utc::now().to_rfc3339()),
-            consumed_airtime: None,
-        }),
-        received_at: Some(chrono::Utc::now().to_rfc3339()),
-        correlation_ids: None,
-    };
-
-    // Test the auditing
-    let findings = auditor.audit_packet(&test_message);
-    info!("🔍 Audit completed with {} findings", findings.len());
-
-    for finding in findings {
-        info!("  - {}: {} ({})",
-              finding.check, finding.details,
-              match finding.severity {
-                  Severity::Critical => "🔴 Critical",
-                  Severity::High => "🟠 High",
-                  Severity::Medium => "🟡 Medium",
-                  Severity::Low => "🟢 Low",
-                  Severity::Info => "ℹ️  Info",
-              });
-    }
-
-    // Test device statistics
-    let stats = auditor.get_device_statistics();
-    info!("📊 Device statistics: {} devices tracked", stats.len());
 
     Ok(())
 }

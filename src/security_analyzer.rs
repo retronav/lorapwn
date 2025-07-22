@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc, Duration};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
-use tracing::debug;
 use crate::vector_db::PacketLike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,7 +323,7 @@ impl DeviceProfiler {
     where
         T: PacketLike + PacketLikeExt,
     {
-        let mut findings = Vec::new();
+        let findings = Vec::new();
         let device_id = packet.get_device_id();
 
         // Create or update device profile

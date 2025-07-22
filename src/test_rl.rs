@@ -1,6 +1,6 @@
 use crate::rl_pipeline::{RLPipeline, LoRaWanRLAgent, NetworkState, NetworkAction};
 use anyhow::Result;
-use tracing::{info, debug, error};
+use tracing::{info, debug};
 use std::collections::HashMap;
 
 /// Main test function for the reinforcement learning pipeline

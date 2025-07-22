@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRaWAN Auditing Pipeline</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛰️ LoRaWAN Auditing Pipeline</h1>
+            <p>Real-time monitoring and analysis of TTN LoRaWAN packets</p>
+        </div>
+
+        <div class="connection-panel">
+            <h3>TTN V3 Connection</h3>
+            <div class="form-group">
+                <label for="app-id">Application ID</label>
+                <input type="text" id="app-id" placeholder="my-lorawan-app">
+            </div>
+            <div class="form-group">
+                <label for="access-key">Access Key</label>
+                <input type="password" id="access-key" placeholder="NNSXS.XXXXXXXXXXXXXXXX">
+            </div>
+            <div class="form-group">
+                <label for="cluster">TTN Cluster</label>
+                <input type="text" id="cluster" placeholder="eu1" value="eu1">
+            </div>
+            <button id="connect-btn" class="btn">Connect to TTN</button>
+            <button id="disconnect-btn" class="btn" style="display: none; background: #dc3545;">Disconnect</button>
+            <div style="margin-top: 10px;">
+                Status: <span id="status-text" class="status-disconnected">Disconnected</span>
+            </div>
+            <button id="clear-credentials-btn" class="btn" style="display: none; background: #ffc107;">Clear Credentials</button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="total-packets">0</div>
+                <div class="stat-label">Total Packets</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="total-findings">0</div>
+                <div class="stat-label">Total Findings</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="unique-devices">0</div>
+                <div class="stat-label">Unique Devices</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="critical-findings">0</div>
+                <div class="stat-label">Critical Findings</div>
+            </div>
+        </div>
+
+        <div class="packet-list">
+            <h3>Live Packet Feed</h3>
+            <div id="packets-container">
+                <p>Waiting for packet data...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use ndarray::{Array1, Array2};
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
-use tracing::{info, debug, warn};
+use tracing::{info, debug};
 
 /// State representation for LoRaWAN network optimization
 #[derive(Debug, Clone, Serialize, Deserialize)]
