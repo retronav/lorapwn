@@ -821,6 +821,242 @@ pub async fn analysis_dashboard() -> Html<String> {
     Html(html_content)
 }
 
+pub async fn historical_dashboard() -> Html<String> {
+    let html_content = fs::read_to_string("templates/historical.html")
+        .unwrap_or_else(|_| "<h1>Error loading historical template</h1>".to_string());
+    Html(html_content)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoricalQueryParams {
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub device_id: Option<String>,
+    pub severity: Option<String>,
+    pub limit: Option<usize>,
+    pub page: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoricalResponse {
+    pub packets: Vec<PacketRecord>,
+    pub total_pages: usize,
+    pub current_page: usize,
+    pub total_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoricalStats {
+    pub total_packets: usize,
+    pub total_findings: usize,
+    pub unique_devices: usize,
+    pub critical_findings: usize,
+    pub severity_distribution: HashMap<String, usize>,
+    pub timeline: Option<TimelineData>,
+    pub device_activity: Vec<DeviceActivity>,
+    pub top_findings: Vec<TopFinding>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TimelineData {
+    pub labels: Vec<String>,
+    pub data: Vec<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeviceActivity {
+    pub device_id: String,
+    pub packet_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TopFinding {
+    pub check: String,
+    pub count: usize,
+}
+
+pub async fn get_historical_packets(
+    State(state): State<AppState>,
+    Query(params): Query<HistoricalQueryParams>,
+) -> Json<HistoricalResponse> {
+    let page = params.page.unwrap_or(1);
+    let limit = params.limit.unwrap_or(100).min(500);
+    let offset = (page - 1) * limit;
+
+    // Get packets from vector database with filters
+    let packets = get_filtered_packets_from_vector_db(&state, &params, limit, offset).await;
+    let total_count = get_total_packet_count(&state, &params).await;
+    let total_pages = ((total_count as f64) / (limit as f64)).ceil() as usize;
+
+    Json(HistoricalResponse {
+        packets,
+        total_pages: total_pages.max(1),
+        current_page: page,
+        total_count,
+    })
+}
+
+pub async fn get_historical_stats(
+    State(state): State<AppState>,
+    Query(params): Query<HistoricalQueryParams>,
+) -> Json<HistoricalStats> {
+    let packets = get_filtered_packets_from_vector_db(&state, &params, 1000, 0).await;
+
+    let total_packets = packets.len();
+    let total_findings: usize = packets.iter().map(|p| p.findings.len()).sum();
+    let unique_devices = packets
+        .iter()
+        .map(|p| p.message.end_device_ids.as_ref().map_or("unknown".to_string(), |ids| ids.device_id.clone()))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    let mut severity_distribution = HashMap::new();
+    let mut critical_findings = 0;
+    let mut device_activity: HashMap<String, usize> = HashMap::new();
+    let mut finding_counts: HashMap<String, usize> = HashMap::new();
+
+    for packet in &packets {
+        let device_id = packet.message.end_device_ids.as_ref()
+            .map_or("unknown".to_string(), |ids| ids.device_id.clone());
+
+        *device_activity.entry(device_id).or_insert(0) += 1;
+
+        for finding in &packet.findings {
+            let severity = match finding.severity {
+                Severity::Critical => {
+                    critical_findings += 1;
+                    "critical"
+                },
+                Severity::High => "high",
+                Severity::Medium => "medium",
+                Severity::Low => "low",
+                Severity::Info => "info",
+            };
+            *severity_distribution.entry(severity.to_string()).or_insert(0) += 1;
+            *finding_counts.entry(finding.check.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Generate timeline data (packets per hour for the last 24 hours)
+    let timeline = generate_timeline_data(&packets);
+
+    // Top device activity
+    let mut device_activity_vec: Vec<DeviceActivity> = device_activity
+        .into_iter()
+        .map(|(device_id, count)| DeviceActivity { device_id, packet_count: count })
+        .collect();
+    device_activity_vec.sort_by(|a, b| b.packet_count.cmp(&a.packet_count));
+    device_activity_vec.truncate(10);
+
+    // Top findings
+    let mut top_findings: Vec<TopFinding> = finding_counts
+        .into_iter()
+        .map(|(check, count)| TopFinding { check, count })
+        .collect();
+    top_findings.sort_by(|a, b| b.count.cmp(&a.count));
+    top_findings.truncate(10);
+
+    Json(HistoricalStats {
+        total_packets,
+        total_findings,
+        unique_devices,
+        critical_findings,
+        severity_distribution,
+        timeline: Some(timeline),
+        device_activity: device_activity_vec,
+        top_findings,
+    })
+}
+
+pub async fn get_historical_packet_details(
+    State(state): State<AppState>,
+    axum::extract::Path(packet_id): axum::extract::Path<String>,
+) -> Result<Json<PacketRecord>, (StatusCode, &'static str)> {
+    // Try to find packet in current memory first
+    let packets = state.packets.read();
+    if let Some(packet) = packets.iter().find(|p| p.get_id() == packet_id) {
+        return Ok(Json(packet.clone()));
+    }
+
+    // If not found in memory, we could search vector DB by ID
+    // For now, return not found
+    Err((StatusCode::NOT_FOUND, "Packet not found"))
+}
+
+pub async fn export_historical_packet(
+    State(state): State<AppState>,
+    axum::extract::Path(packet_id): axum::extract::Path<String>,
+) -> Result<Json<PacketRecord>, (StatusCode, &'static str)> {
+    get_historical_packet_details(State(state), axum::extract::Path(packet_id)).await
+}
+
+pub async fn export_historical_data(
+    State(state): State<AppState>,
+    Query(params): Query<HistoricalQueryParams>,
+) -> Result<String, (StatusCode, &'static str)> {
+    let packets = get_filtered_packets_from_vector_db(&state, &params, 1000, 0).await;
+
+    let mut csv_content = String::from("timestamp,device_id,frame_counter,rssi,snr,gateway_count,findings_count,severity,findings_details\n");
+
+    for packet in packets {
+        let device_id = packet.message.end_device_ids.as_ref()
+            .map_or("unknown".to_string(), |ids| ids.device_id.clone());
+        let timestamp = packet.processed_at.to_rfc3339();
+        let frame_counter = packet.message.uplink_message.as_ref()
+            .and_then(|up| up.f_cnt)
+            .map_or("N/A".to_string(), |fc| fc.to_string());
+        let rssi = packet.message.uplink_message.as_ref()
+            .and_then(|up| up.rx_metadata.as_ref())
+            .and_then(|meta| meta.iter().filter_map(|m| m.rssi).max())
+            .map_or("N/A".to_string(), |r| r.to_string());
+        let snr = packet.message.uplink_message.as_ref()
+            .and_then(|up| up.rx_metadata.as_ref())
+            .and_then(|meta| meta.iter().filter_map(|m| m.snr).next())
+            .map_or("N/A".to_string(), |s| s.to_string());
+        let gateway_count = packet.message.uplink_message.as_ref()
+            .and_then(|up| up.rx_metadata.as_ref())
+            .map_or(0, |meta| meta.len());
+        let findings_count = packet.findings.len();
+        let highest_severity = packet.findings.iter()
+            .map(|f| match f.severity {
+                Severity::Critical => 4,
+                Severity::High => 3,
+                Severity::Medium => 2,
+                Severity::Low => 1,
+                Severity::Info => 0,
+            })
+            .max()
+            .map(|level| match level {
+                4 => "Critical",
+                3 => "High",
+                2 => "Medium",
+                1 => "Low",
+                _ => "Info",
+            })
+            .unwrap_or("None");
+        let findings_details = packet.findings.iter()
+            .map(|f| format!("{}: {}", f.check, f.details))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        csv_content.push_str(&format!(
+            "{},{},{},{},{},{},{},{},\"{}\"\n",
+            timestamp, device_id, frame_counter, rssi, snr, gateway_count, findings_count, highest_severity, findings_details
+        ));
+    }
+
+    Ok(csv_content)
+}
+
+pub async fn get_devices_list(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
+    let device_states = state.auditor.get_device_statistics();
+    let devices: Vec<serde_json::Value> = device_states
+        .keys()
+        .map(|device_id| serde_json::json!({"device_id": device_id}))
+        .collect();
+    Json(devices)
+}
+
 pub async fn get_packets(
     State(state): State<AppState>,
     Query(params): Query<QueryParams>,
@@ -829,138 +1065,212 @@ pub async fn get_packets(
 }
 
 pub async fn get_statistics(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let device_stats = state.auditor.get_device_statistics();
     let packets = state.packets.read();
-    let device_states = state.auditor.get_device_statistics();
 
     let total_packets = packets.len();
+    let total_devices = device_stats.len();
     let total_findings: usize = packets.iter().map(|p| p.findings.len()).sum();
-    let unique_devices = device_states.len();
 
-    let severity_counts = packets
-        .iter()
-        .flat_map(|p| &p.findings)
-        .fold(HashMap::new(), |mut acc, finding| {
-            let severity = match finding.severity {
+    let mut severity_counts = HashMap::new();
+    for packet in packets.iter() {
+        for finding in &packet.findings {
+            let severity_str = match finding.severity {
                 Severity::Critical => "critical",
                 Severity::High => "high",
                 Severity::Medium => "medium",
                 Severity::Low => "low",
                 Severity::Info => "info",
             };
-            *acc.entry(severity.to_string()).or_insert(0) += 1;
-            acc
-        });
-
-    let connection_status = state.ttn_config.read().as_ref().map(|c| c.is_connected).unwrap_or(false);
+            *severity_counts.entry(severity_str).or_insert(0) += 1;
+        }
+    }
 
     Json(serde_json::json!({
         "total_packets": total_packets,
+        "total_devices": total_devices,
         "total_findings": total_findings,
-        "unique_devices": unique_devices,
-        "severity_counts": severity_counts,
-        "connection_status": connection_status,
-        "device_states": device_states
+        "severity_distribution": severity_counts,
+        "is_connected": state.ttn_config.read().as_ref().map_or(false, |c| c.is_connected)
     }))
 }
 
 pub async fn connect_ttn(
     State(state): State<AppState>,
     Json(request): Json<ConnectRequest>,
-) -> Result<&'static str, (StatusCode, &'static str)> {
-    info!("🔗 Attempting to connect to TTN with app_id: {}", request.app_id);
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    info!("🔌 Attempting to connect to TTN: {}", request.app_id);
 
     match TtnClient::new(request.app_id.clone(), request.access_key, request.cluster.clone()) {
-        Ok((client, mut rx)) => {
-            // Update configuration
-            *state.ttn_config.write() = Some(TtnConfig {
-                app_id: request.app_id.clone(),
-                cluster: request.cluster.clone(),
-                is_connected: true,
-            });
+        Ok((_client, mut message_rx)) => {
+            // Update TTN config
+            {
+                let mut config = state.ttn_config.write();
+                *config = Some(TtnConfig {
+                    app_id: request.app_id.clone(),
+                    cluster: request.cluster,
+                    is_connected: true,
+                });
+            }
 
-            // Store client reference for potential disconnection
+            // Spawn message processing task
             let state_clone = state.clone();
-
             tokio::spawn(async move {
-                info!("📡 Starting TTN message processing task");
+                info!("📡 Starting TTN message processing loop");
+                while let Some(message) = message_rx.recv().await {
+                    debug!("📦 Processing message from device: {:?}",
+                           message.end_device_ids.as_ref().map(|ids| &ids.device_id));
 
-                while let Some(message) = rx.recv().await {
-                    debug!("📦 Received TTN message for device: {:?}",
-                        message.end_device_ids.as_ref().map(|ids| &ids.device_id));
-
-                    // Audit the packet
                     let findings = state_clone.auditor.audit_packet(&message);
-
-                    // Log findings if any
-                    if !findings.is_empty() {
-                        info!("🚨 Found {} security findings for device: {:?}",
-                            findings.len(),
-                            message.end_device_ids.as_ref().map(|ids| &ids.device_id));
-
-                        for finding in &findings {
-                            match finding.severity {
-                                Severity::Critical | Severity::High => {
-                                    error!("🔴 {} - {}: {}", finding.severity, finding.check, finding.details);
-                                }
-                                Severity::Medium => {
-                                    info!("🟡 {} - {}: {}", finding.severity, finding.check, finding.details);
-                                }
-                                _ => {
-                                    debug!("🟢 {} - {}: {}", finding.severity, finding.check, finding.details);
-                                }
-                            }
-                        }
-                    }
-
-                    // Store the packet
                     state_clone.add_packet(message, findings).await;
                 }
-
-                info!("📡 TTN message processing task ended");
+                info!("🔌 TTN message processing loop ended");
             });
 
             info!("✅ Successfully connected to TTN");
-            Ok("Successfully connected to TTN")
+            Ok(Json(serde_json::json!({
+                "status": "connected",
+                "app_id": request.app_id
+            })))
         }
         Err(e) => {
             error!("❌ Failed to connect to TTN: {}", e);
-            Err((StatusCode::BAD_REQUEST, "Failed to connect to TTN"))
+            Err((StatusCode::BAD_REQUEST, format!("Failed to connect: {}", e)))
         }
     }
 }
 
-pub async fn disconnect_ttn(State(state): State<AppState>) -> &'static str {
-    *state.ttn_config.write() = None;
-    info!("🔌 Disconnected from TTN");
-    "Disconnected from TTN"
-}
-
-pub async fn get_clustering_analysis(State(state): State<AppState>) -> Json<Value> {
-    match state.get_clustering_results() {
-        Some(results) => Json(serde_json::to_value(results).unwrap_or_default()),
-        None => {
-            // Trigger new analysis if none exists
-            if let Err(e) = state.run_clustering_analysis().await {
-                error!("Failed to run clustering analysis: {}", e);
-            }
-            Json(serde_json::json!({"status": "analysis_running", "message": "Clustering analysis started"}))
-        }
+pub async fn disconnect_ttn(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let mut config = state.ttn_config.write();
+    if let Some(ref mut ttn_config) = config.as_mut() {
+        ttn_config.is_connected = false;
+        info!("🔌 Disconnected from TTN");
     }
+
+    Json(serde_json::json!({
+        "status": "disconnected"
+    }))
 }
 
-pub async fn trigger_clustering_analysis(State(state): State<AppState>) -> Json<Value> {
+pub async fn get_clustering_analysis(State(state): State<AppState>) -> Json<Option<ClusteringResults>> {
+    Json(state.get_clustering_results())
+}
+
+pub async fn trigger_clustering_analysis(State(state): State<AppState>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    info!("🔍 Manually triggering clustering analysis");
+
     match state.run_clustering_analysis().await {
-        Ok(_) => Json(serde_json::json!({"status": "success", "message": "Clustering analysis completed"})),
-        Err(e) => Json(serde_json::json!({"status": "error", "message": format!("Analysis failed: {}", e)})),
+        Ok(()) => {
+            Ok(Json(serde_json::json!({
+                "status": "success",
+                "message": "Clustering analysis completed successfully"
+            })))
+        }
+        Err(e) => {
+            error!("❌ Manual clustering analysis failed: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Analysis failed: {}", e)))
+        }
     }
 }
 
 pub async fn update_clustering_config(
     State(state): State<AppState>,
     Json(new_config): Json<ClusteringConfig>,
-) -> Json<Value> {
+) -> Json<serde_json::Value> {
     *state.clustering_config.write() = new_config;
-    Json(serde_json::json!({"status": "success", "message": "Clustering configuration updated"}))
+    info!("🔧 Updated clustering configuration");
+
+    Json(serde_json::json!({
+        "status": "updated",
+        "message": "Clustering configuration updated successfully"
+    }))
+}
+
+// Helper functions for vector database queries
+async fn get_filtered_packets_from_vector_db(
+    state: &AppState,
+    params: &HistoricalQueryParams,
+    limit: usize,
+    _offset: usize,
+) -> Vec<PacketRecord> {
+    // For now, get packets from memory and apply filters
+    // In a full implementation, this would query the vector database with filters
+    let packets = state.packets.read();
+    let mut filtered_packets: Vec<PacketRecord> = packets
+        .iter()
+        .filter(|packet| {
+            // Apply filters
+            if let Some(ref device_id) = params.device_id {
+                if let Some(ref end_device_ids) = packet.message.end_device_ids {
+                    if &end_device_ids.device_id != device_id {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+
+            // Filter by severity if specified
+            if let Some(ref severity) = params.severity {
+                let has_severity = packet.findings.iter().any(|f| {
+                    match (&f.severity, severity.as_str()) {
+                        (Severity::Critical, "critical") => true,
+                        (Severity::High, "high") => true,
+                        (Severity::Medium, "medium") => true,
+                        (Severity::Low, "low") => true,
+                        (Severity::Info, "info") => true,
+                        _ => false,
+                    }
+                });
+                if !has_severity {
+                    return false;
+                }
+            }
+
+            // Date filtering would go here if we had proper timestamp parsing
+            // For now, we'll accept all packets
+
+            true
+        })
+        .cloned()
+        .collect();
+
+    // Sort by timestamp (newest first)
+    filtered_packets.sort_by(|a, b| b.processed_at.cmp(&a.processed_at));
+
+    // Apply limit
+    filtered_packets.truncate(limit);
+    filtered_packets
+}
+
+async fn get_total_packet_count(state: &AppState, params: &HistoricalQueryParams) -> usize {
+    // This would ideally query the vector database for count
+    // For now, get from memory
+    get_filtered_packets_from_vector_db(state, params, usize::MAX, 0).await.len()
+}
+
+fn generate_timeline_data(packets: &[PacketRecord]) -> TimelineData {
+    let mut hourly_counts: HashMap<String, usize> = HashMap::new();
+
+    for packet in packets {
+        let hour = packet.processed_at.format("%Y-%m-%d %H:00").to_string();
+        *hourly_counts.entry(hour).or_insert(0) += 1;
+    }
+
+    let mut sorted_hours: Vec<(String, usize)> = hourly_counts.into_iter().collect();
+    sorted_hours.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let labels: Vec<String> = sorted_hours.iter().map(|(hour, _)| {
+        // Format hour for display
+        if let Ok(dt) = chrono::DateTime::parse_from_str(hour, "%Y-%m-%d %H:%M") {
+            dt.format("%H:%M").to_string()
+        } else {
+            hour.clone()
+        }
+    }).collect();
+    let data: Vec<usize> = sorted_hours.iter().map(|(_, count)| *count).collect();
+
+    TimelineData { labels, data }
 }
 
 #[tokio::main]
@@ -991,9 +1301,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/analysis", get(analysis_dashboard))
+        .route("/historical", get(historical_dashboard))
         .route("/health", get(health_check))
         .route("/api/packets", get(get_packets))
         .route("/api/statistics", get(get_statistics))
+        .route("/api/devices", get(get_devices_list))
+        .route("/api/historical/packets", get(get_historical_packets))
+        .route("/api/historical/stats", get(get_historical_stats))
+        .route("/api/historical/packet/:id", get(get_historical_packet_details))
+        .route("/api/historical/packet/:id/export", get(export_historical_packet))
+        .route("/api/historical/export", get(export_historical_data))
         .route("/api/connect", post(connect_ttn))
         .route("/api/disconnect", post(disconnect_ttn))
         .route("/api/clustering-analysis", get(get_clustering_analysis))
@@ -1005,6 +1322,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🌐 Starting web server on http://0.0.0.0:3000");
     info!("🔗 Dashboard available at: http://localhost:3000");
     info!("📈 Analysis dashboard available at: http://localhost:3000/analysis");
+    info!("📊 Historical dashboard available at: http://localhost:3000/historical");
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
