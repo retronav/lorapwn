@@ -1,9 +1,9 @@
 services:
-  lorawan-dashboard:
+  dashboard:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: lorawan-dashboard
+    container_name: dashboard
     ports:
       - "3000:3000"
     environment:
@@ -57,7 +57,7 @@ services:
   #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
   #     - ./nginx/ssl:/etc/nginx/ssl:ro
   #   depends_on:
-  #     - lorawan-dashboard
+  #     - dashboard
   #   networks:
   #     - lorawan-network
   #   restart: unless-stopped
