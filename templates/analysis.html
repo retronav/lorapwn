@@ -3,15 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LoRaWAN Clustering Analysis</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Analysis - LoRaWAN Auditing Pipeline</title>
     <link rel="stylesheet" href="/static/css/analysis.css">
 </head>
 <body>
+    <!-- Navbar Header -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="/" class="navbar-brand">🛰️ LoRaWAN Auditor</a>
+            <ul class="navbar-nav">
+                <li><a href="/">Dashboard</a></li>
+                <li><a href="/analysis" class="active">Analysis</a></li>
+                <li><a href="/historical">Historical</a></li>
+            </ul>
+        </div>
+    </nav>
+
     <div class="container">
         <div class="header">
-            <h1>🔬 LoRaWAN Clustering Analysis</h1>
-            <p>Advanced pattern recognition and anomaly detection for LoRaWAN networks</p>
+            <h1>📈 Advanced Analysis Dashboard</h1>
+            <p>Deep insights and pattern analysis of LoRaWAN network behavior</p>
         </div>
 
         <div class="controls">
@@ -99,6 +110,19 @@
                     </div>
                 </div>
 
+                <!-- Geospatial Patterns -->
+                <div class="analysis-card">
+                    <div class="card-header">
+                        🌍 Geospatial Analysis
+                    </div>
+                    <div class="card-body">
+                        <div id="geospatial-clusters" class="cluster-list"></div>
+                        <div class="chart-container">
+                            <canvas id="geospatialChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Recommendations -->
                 <div class="analysis-card">
                     <div class="card-header">
@@ -122,6 +146,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/static/js/analysis.js"></script>
 </body>
 </html>

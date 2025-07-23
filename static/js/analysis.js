@@ -65,7 +65,8 @@ function displayAnalysis(data) {
     const totalClusters = (data.device_clusters?.length || 0) +
                         (data.security_clusters?.length || 0) +
                         (data.network_clusters?.length || 0) +
-                        (data.temporal_clusters?.length || 0);
+                        (data.temporal_clusters?.length || 0) +
+                        (data.geospatial_clusters?.length || 0);
     document.getElementById('clusters-count').textContent = totalClusters;
 
     // Display clusters
@@ -73,6 +74,7 @@ function displayAnalysis(data) {
     displaySecurityClusters(data.security_clusters || [], insights.anomalies || []);
     displayNetworkClusters(data.network_clusters || []);
     displayTemporalClusters(data.temporal_clusters || []);
+    displayGeospatialClusters(data.geospatial_clusters || []);
     displayRecommendations(insights.recommendations || []);
     displayTrends(insights.trends || []);
 
@@ -202,6 +204,42 @@ function displayTemporalClusters(clusters) {
     });
 }
 
+function displayGeospatialClusters(clusters) {
+    const container = document.getElementById('geospatial-clusters');
+    container.innerHTML = '';
+
+    if (clusters.length === 0) {
+        container.innerHTML = '<p style="color: #6c757d; font-style: italic;">No geospatial patterns found</p>';
+        return;
+    }
+
+    clusters.forEach(cluster => {
+        const item = document.createElement('div');
+        item.className = 'cluster-item geospatial';
+
+        // Handle different data structures for geospatial clusters
+        const location = cluster.location || cluster.center_location;
+        const deviceCount = cluster.device_count || cluster.devices?.length || 0;
+        const coverageRadius = cluster.coverage_radius || cluster.radius_km;
+        const region = location?.region || 'Urban Area';
+        const coordinates = location?.coordinates || location;
+
+        item.innerHTML = `
+            <div class="cluster-title">${cluster.cluster_id}</div>
+            <div class="cluster-details">
+                <strong>Location:</strong> ${region}<br>
+                <strong>Coverage Area:</strong> ${coverageRadius ? coverageRadius.toFixed(2) + ' km' : 'N/A'}<br>
+                <strong>Devices:</strong> ${deviceCount}<br>
+                <strong>Movement Pattern:</strong> ${cluster.movement_pattern || 'Unknown'}<br>
+                <strong>Gateway Count:</strong> ${cluster.coverage_gateways?.length || cluster.gateway_count || 0}
+                ${coordinates ? `<br><strong>Coordinates:</strong> ${coordinates.latitude?.toFixed(4) || coordinates.lat?.toFixed(4)}, ${coordinates.longitude?.toFixed(4) || coordinates.lng?.toFixed(4)}` : ''}
+                ${cluster.coverage_gateways ? `<br><strong>Gateways:</strong> ${cluster.coverage_gateways.join(', ')}` : ''}
+            </div>
+        `;
+        container.appendChild(item);
+    });
+}
+
 function displayRecommendations(recommendations) {
     const container = document.getElementById('recommendations');
     container.innerHTML = '';
@@ -252,6 +290,12 @@ function displayTrends(trends) {
 }
 
 function createCharts(data) {
+    // Wait for Chart.js to be available
+    if (typeof Chart === 'undefined') {
+        console.error('Chart.js is not loaded');
+        return;
+    }
+
     // Device Behavior Chart
     if (data.device_clusters && data.device_clusters.length > 0) {
         createDeviceBehaviorChart(data.device_clusters);
@@ -266,6 +310,11 @@ function createCharts(data) {
     if (data.temporal_clusters && data.temporal_clusters.length > 0) {
         createTemporalChart(data.temporal_clusters);
     }
+
+    // Geospatial Chart
+    if (data.geospatial_clusters && data.geospatial_clusters.length > 0) {
+        createGeospatialChart(data.geospatial_clusters);
+    }
 }
 
 function createDeviceBehaviorChart(clusters) {
@@ -277,8 +326,8 @@ function createDeviceBehaviorChart(clusters) {
     }
 
     const labels = clusters.map(c => c.cluster_id);
-    const sizes = clusters.map(c => c.size);
-    const reliabilityScores = clusters.map(c => c.characteristics.reliability_score * 100);
+    const sizes = clusters.map(c => c.size || c.devices?.length || 0);
+    const reliabilityScores = clusters.map(c => (c.characteristics?.reliability_score || 0) * 100);
 
     charts.deviceBehavior = new Chart(ctx, {
         type: 'bar',
@@ -287,16 +336,22 @@ function createDeviceBehaviorChart(clusters) {
             datasets: [{
                 label: 'Cluster Size',
                 data: sizes,
-                backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                borderColor: 'rgba(54, 162, 235, 1)',
-                borderWidth: 1,
+                backgroundColor: 'rgba(27, 63, 111, 0.6)',
+                borderColor: 'rgba(27, 63, 111, 1)',
+                borderWidth: 2,
+                borderRadius: 5,
                 yAxisID: 'y'
             }, {
                 label: 'Reliability (%)',
                 data: reliabilityScores,
                 type: 'line',
-                borderColor: 'rgba(255, 99, 132, 1)',
-                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                borderColor: 'rgba(220, 53, 69, 1)',
+                backgroundColor: 'rgba(220, 53, 69, 0.2)',
+                borderWidth: 3,
+                pointBackgroundColor: 'rgba(220, 53, 69, 1)',
+                pointBorderColor: '#CCCCCC',
+                pointBorderWidth: 2,
+                pointRadius: 6,
                 yAxisID: 'y1'
             }]
         },
@@ -306,7 +361,21 @@ function createDeviceBehaviorChart(clusters) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Device Behavior Clusters'
+                    text: 'Device Behavior Clusters',
+                    color: '#1B3F6F',
+                    font: {
+                        family: 'Instrument Sans',
+                        size: 16,
+                        weight: 600
+                    }
+                },
+                legend: {
+                    labels: {
+                        color: '#1B3F6F',
+                        font: {
+                            family: 'Instrument Sans'
+                        }
+                    }
                 }
             },
             scales: {
@@ -314,14 +383,41 @@ function createDeviceBehaviorChart(clusters) {
                     type: 'linear',
                     display: true,
                     position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Cluster Size',
+                        color: '#1B3F6F'
+                    },
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
+                    grid: {
+                        color: 'rgba(27, 63, 111, 0.1)'
+                    }
                 },
                 y1: {
                     type: 'linear',
                     display: true,
                     position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Reliability (%)',
+                        color: '#1B3F6F'
+                    },
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
                     grid: {
                         drawOnChartArea: false,
                     },
+                },
+                x: {
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
+                    grid: {
+                        color: 'rgba(27, 63, 111, 0.1)'
+                    }
                 }
             }
         }
@@ -337,7 +433,7 @@ function createNetworkQualityChart(clusters) {
     }
 
     const labels = clusters.map(c => c.cluster_id);
-    const qualityScores = clusters.map(c => c.quality_score * 100);
+    const qualityScores = clusters.map(c => (c.quality_score || 0) * 100);
 
     charts.networkQuality = new Chart(ctx, {
         type: 'doughnut',
@@ -346,17 +442,13 @@ function createNetworkQualityChart(clusters) {
             datasets: [{
                 data: qualityScores,
                 backgroundColor: [
-                    'rgba(40, 167, 69, 0.6)',   // Green for good quality
-                    'rgba(255, 193, 7, 0.6)',   // Yellow for medium
-                    'rgba(220, 53, 69, 0.6)',   // Red for poor
-                    'rgba(108, 117, 125, 0.6)'  // Gray for unknown
+                    'rgba(40, 167, 69, 0.8)',   // Green for good quality
+                    'rgba(255, 193, 7, 0.8)',   // Yellow for medium
+                    'rgba(220, 53, 69, 0.8)',   // Red for poor
+                    'rgba(27, 63, 111, 0.8)',   // Primary blue
+                    'rgba(108, 117, 125, 0.8)'  // Gray for unknown
                 ],
-                borderColor: [
-                    'rgba(40, 167, 69, 1)',
-                    'rgba(255, 193, 7, 1)',
-                    'rgba(220, 53, 69, 1)',
-                    'rgba(108, 117, 125, 1)'
-                ],
+                borderColor: '#CCCCCC',
                 borderWidth: 2
             }]
         },
@@ -366,14 +458,26 @@ function createNetworkQualityChart(clusters) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Network Quality Distribution'
+                    text: 'Network Quality Distribution',
+                    color: '#1B3F6F',
+                    font: {
+                        family: 'Instrument Sans',
+                        size: 16,
+                        weight: 600
+                    }
                 },
                 legend: {
-                    position: 'bottom'
+                    position: 'bottom',
+                    labels: {
+                        color: '#1B3F6F',
+                        font: {
+                            family: 'Instrument Sans'
+                        },
+                        padding: 20
+                    }
                 }
             }
-        }
-    });
+        }});
 }
 
 function createTemporalChart(clusters) {
@@ -389,9 +493,10 @@ function createTemporalChart(clusters) {
 
     // Simulate hourly activity based on peak hours
     clusters.forEach(cluster => {
-        cluster.peak_hours.forEach(hour => {
+        const peakHours = cluster.peak_hours || [];
+        peakHours.forEach(hour => {
             if (hour >= 0 && hour < 24) {
-                activityData[hour] += cluster.activity_score;
+                activityData[hour] += cluster.activity_score || 0;
             }
         });
     });
@@ -403,10 +508,15 @@ function createTemporalChart(clusters) {
             datasets: [{
                 label: 'Activity Score',
                 data: activityData,
-                borderColor: 'rgba(102, 126, 234, 1)',
-                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                borderColor: 'rgba(27, 63, 111, 1)',
+                backgroundColor: 'rgba(27, 63, 111, 0.1)',
+                borderWidth: 3,
                 tension: 0.4,
-                fill: true
+                fill: true,
+                pointBackgroundColor: 'rgba(27, 63, 111, 1)',
+                pointBorderColor: '#CCCCCC',
+                pointBorderWidth: 2,
+                pointRadius: 5
             }]
         },
         options: {
@@ -415,7 +525,21 @@ function createTemporalChart(clusters) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Daily Activity Pattern'
+                    text: 'Daily Activity Pattern',
+                    color: '#1B3F6F',
+                    font: {
+                        family: 'Instrument Sans',
+                        size: 16,
+                        weight: 600
+                    }
+                },
+                legend: {
+                    labels: {
+                        color: '#1B3F6F',
+                        font: {
+                            family: 'Instrument Sans'
+                        }
+                    }
                 }
             },
             scales: {
@@ -423,13 +547,132 @@ function createTemporalChart(clusters) {
                     beginAtZero: true,
                     title: {
                         display: true,
-                        text: 'Activity Score'
+                        text: 'Activity Score',
+                        color: '#1B3F6F'
+                    },
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
+                    grid: {
+                        color: 'rgba(27, 63, 111, 0.1)'
                     }
                 },
                 x: {
                     title: {
                         display: true,
-                        text: 'Hour of Day'
+                        text: 'Hour of Day',
+                        color: '#1B3F6F'
+                    },
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
+                    grid: {
+                        color: 'rgba(27, 63, 111, 0.1)'
+                    }
+                }
+            }
+        }});
+}
+
+function createGeospatialChart(clusters) {
+    const ctx = document.getElementById('geospatialChart');
+    if (!ctx) return;
+
+    if (charts.geospatial) {
+        charts.geospatial.destroy();
+    }
+
+    // Handle the actual data structure from your JSON
+    const chartData = clusters.map((cluster, index) => {
+        const location = cluster.center_location || cluster.location;
+        const deviceCount = cluster.device_count || cluster.devices?.length || 0;
+        const coverageRadius = cluster.radius_km || cluster.coverage_radius || 1;
+        const gatewayCount = cluster.coverage_gateways?.length || cluster.gateway_count || 0;
+
+        return {
+            x: coverageRadius, // X-axis: Coverage area
+            y: gatewayCount,   // Y-axis: Gateway count
+            r: Math.max(8, deviceCount * 3 + 5) // Bubble size based on device count (minimum 8px)
+        };
+    });
+
+    charts.geospatial = new Chart(ctx, {
+        type: 'bubble',
+        data: {
+            datasets: [{
+                label: 'Geospatial Clusters',
+                data: chartData,
+                backgroundColor: 'rgba(111, 66, 193, 0.6)', // Purple color for geospatial
+                borderColor: 'rgba(111, 66, 193, 1)',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Geospatial Analysis (Coverage vs Gateway Count)',
+                    color: '#1B3F6F',
+                    font: {
+                        family: 'Instrument Sans',
+                        size: 16,
+                        weight: 600
+                    }
+                },
+                legend: {
+                    labels: {
+                        color: '#1B3F6F',
+                        font: {
+                            family: 'Instrument Sans'
+                        }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const clusterData = clusters[context.dataIndex];
+                            const location = clusterData.center_location || clusterData.location;
+                            const deviceCount = clusterData.device_count || clusterData.devices?.length || 0;
+
+                            return [
+                                `Cluster: ${clusterData.cluster_id}`,
+                                `Coverage: ${(clusterData.radius_km || 0).toFixed(2)} km`,
+                                `Gateways: ${clusterData.coverage_gateways?.length || 0}`,
+                                `Devices: ${deviceCount}`,
+                                `Pattern: ${clusterData.movement_pattern || 'Unknown'}`,
+                                location ? `Location: ${location.latitude?.toFixed(4)}, ${location.longitude?.toFixed(4)}` : 'Location: Unknown'
+                            ];
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Coverage Radius (km)',
+                        color: '#1B3F6F'
+                    },
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
+                    grid: {
+                        color: 'rgba(27, 63, 111, 0.1)'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Gateway Count',
+                        color: '#1B3F6F'
+                    },
+                    ticks: {
+                        color: '#1B3F6F'
+                    },
+                    grid: {
+                        color: 'rgba(27, 63, 111, 0.1)'
                     }
                 }
             }

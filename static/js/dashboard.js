@@ -252,6 +252,8 @@ function updateStatistics(stats) {
     document.getElementById('critical-findings').textContent = stats.severity_counts?.critical || 0;
 }
 
+let lastPacketId = null; // Track the last packet we've seen
+
 function updatePacketList(packets) {
     const container = document.getElementById('packets-container');
 
@@ -260,82 +262,123 @@ function updatePacketList(packets) {
         return;
     }
 
-    container.innerHTML = packets.map(packet => {
-        const deviceId = packet.message.end_device_ids?.device_id || 'Unknown';
-        const timestamp = new Date(packet.processed_at).toLocaleString();
-        const fcnt = packet.message.uplink_message?.f_cnt || 'N/A';
-        const fport = packet.message.uplink_message?.f_port || 'N/A';
+    // If this is the first load or we need to rebuild the list
+    if (!lastPacketId || container.children.length === 0) {
+        // Initial load - render all packets
+        container.innerHTML = packets.map(packet => createPacketHtml(packet)).join('');
+        if (packets.length > 0) {
+            lastPacketId = getPacketId(packets[0]);
+        }
+        return;
+    }
 
-        // Extract payload information
-        const frmPayload = packet.message.uplink_message?.frm_payload || null;
-        const decodedPayload = packet.message.uplink_message?.decoded_payload || null;
+    // Find new packets by comparing with lastPacketId
+    const newPackets = [];
+    for (const packet of packets) {
+        const packetId = getPacketId(packet);
+        if (packetId === lastPacketId) {
+            break; // Found the last packet we've seen, stop here
+        }
+        newPackets.push(packet);
+    }
 
-        // Format payload display
-        let payloadHtml = '<div class="payload-section">';
+    // Add only new packets to the top
+    if (newPackets.length > 0) {
+        const newPacketsHtml = newPackets.map(packet => createPacketHtml(packet)).join('');
+        container.insertAdjacentHTML('afterbegin', newPacketsHtml);
+        lastPacketId = getPacketId(newPackets[0]);
 
-        if (frmPayload) {
-            payloadHtml += `<div class="payload-item">
-                <strong>Raw Payload (Hex):</strong>
-                <code class="payload-hex">${frmPayload}</code>
-            </div>`;
+        // Limit the number of displayed packets to prevent memory issues
+        const maxPackets = 20;
+        while (container.children.length > maxPackets) {
+            container.removeChild(container.lastChild);
+        }
+    }
+}
 
-            // Convert hex to ASCII if possible
-            try {
-                const hexString = frmPayload.replace(/[^0-9A-Fa-f]/g, '');
-                let ascii = '';
-                for (let i = 0; i < hexString.length; i += 2) {
-                    const byte = parseInt(hexString.substr(i, 2), 16);
-                    ascii += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
-                }
-                if (ascii.replace(/\./g, '').length > 0) {
-                    payloadHtml += `<div class="payload-item">
-                        <strong>ASCII:</strong>
-                        <code class="payload-ascii">${ascii}</code>
-                    </div>`;
-                }
-            } catch (e) {
-                // Ignore conversion errors
+function getPacketId(packet) {
+    // Create a unique identifier for each packet
+    const deviceId = packet.message.end_device_ids?.device_id || 'unknown';
+    const timestamp = packet.processed_at;
+    const fcnt = packet.message.uplink_message?.f_cnt || 0;
+    return `${deviceId}-${timestamp}-${fcnt}`;
+}
+
+function createPacketHtml(packet) {
+    const deviceId = packet.message.end_device_ids?.device_id || 'Unknown';
+    const timestamp = new Date(packet.processed_at).toLocaleString();
+    const fcnt = packet.message.uplink_message?.f_cnt || 'N/A';
+    const fport = packet.message.uplink_message?.f_port || 'N/A';
+
+    // Extract payload information
+    const frmPayload = packet.message.uplink_message?.frm_payload || null;
+    const decodedPayload = packet.message.uplink_message?.decoded_payload || null;
+
+    // Format payload display
+    let payloadHtml = '<div class="payload-section">';
+
+    if (frmPayload) {
+        payloadHtml += `<div class="payload-item">
+            <strong>Raw Payload (Hex):</strong>
+            <code class="payload-hex">${frmPayload}</code>
+        </div>`;
+
+        // Convert hex to ASCII if possible
+        try {
+            const hexString = frmPayload.replace(/[^0-9A-Fa-f]/g, '');
+            let ascii = '';
+            for (let i = 0; i < hexString.length; i += 2) {
+                const byte = parseInt(hexString.substr(i, 2), 16);
+                ascii += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
             }
+            if (ascii.replace(/\./g, '').length > 0) {
+                payloadHtml += `<div class="payload-item">
+                    <strong>ASCII:</strong>
+                    <code class="payload-ascii">${ascii}</code>
+                </div>`;
+            }
+        } catch (e) {
+            // Ignore conversion errors
         }
+    }
 
-        if (decodedPayload && decodedPayload !== null) {
-            payloadHtml += `<div class="payload-item">
-                <strong>Decoded Payload:</strong>
-                <pre class="payload-json">${JSON.stringify(decodedPayload, null, 2)}</pre>
-            </div>`;
-        } else if (frmPayload) {
-            payloadHtml += `<div class="payload-item">
-                <strong>Decoded Payload:</strong>
-                <span class="payload-none">No decoder configured</span>
-            </div>`;
-        }
+    if (decodedPayload && decodedPayload !== null) {
+        payloadHtml += `<div class="payload-item">
+            <strong>Decoded Payload:</strong>
+            <pre class="payload-json">${JSON.stringify(decodedPayload, null, 2)}</pre>
+        </div>`;
+    } else if (frmPayload) {
+        payloadHtml += `<div class="payload-item">
+            <strong>Decoded Payload:</strong>
+            <span class="payload-none">No decoder configured</span>
+        </div>`;
+    }
 
-        payloadHtml += '</div>';
+    payloadHtml += '</div>';
 
-        const findingsHtml = packet.findings.map(finding =>
-            `<div class="finding ${finding.severity.toLowerCase()}">
-                <strong>${finding.check}</strong> (${finding.severity}): ${finding.details}
-                ${finding.recommendation ? `<br><em>💡 ${finding.recommendation}</em>` : ''}
-            </div>`
-        ).join('');
+    const findingsHtml = packet.findings.map(finding =>
+        `<div class="finding ${finding.severity.toLowerCase()}">
+            <strong>${finding.check}</strong> (${finding.severity}): ${finding.details}
+            ${finding.recommendation ? `<br><em>💡 ${finding.recommendation}</em>` : ''}
+        </div>`
+    ).join('');
 
-        return `
-            <div class="packet-card">
-                <div class="packet-header">
-                    <strong>Device:</strong> ${deviceId} |
-                    <strong>FCnt:</strong> ${fcnt} |
-                    <strong>FPort:</strong> ${fport} |
-                    <strong>Time:</strong> ${timestamp} |
-                    <strong>Findings:</strong> ${packet.findings.length}
-                </div>
-                <div class="packet-body">
-                    ${payloadHtml}
-                    <div class="findings-section">
-                        <h4>Security Findings:</h4>
-                        ${packet.findings.length > 0 ? findingsHtml : '<div class="finding low">✅ No security issues detected</div>'}
-                    </div>
+    return `
+        <div class="packet-card">
+            <div class="packet-header">
+                <strong>Device:</strong> ${deviceId} |
+                <strong>FCnt:</strong> ${fcnt} |
+                <strong>FPort:</strong> ${fport} |
+                <strong>Time:</strong> ${timestamp} |
+                <strong>Findings:</strong> ${packet.findings.length}
+            </div>
+            <div class="packet-body">
+                ${payloadHtml}
+                <div class="findings-section">
+                    <h4>Security Findings:</h4>
+                    ${packet.findings.length > 0 ? findingsHtml : '<div class="finding low">✅ No security issues detected</div>'}
                 </div>
             </div>
-        `;
-    }).join('');
+        </div>
+    `;
 }

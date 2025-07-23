@@ -7,6 +7,18 @@
     <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
+    <!-- Navbar Header -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="/" class="navbar-brand">🛰️ LoRaWAN Auditor</a>
+            <ul class="navbar-nav">
+                <li><a href="/" class="active">Dashboard</a></li>
+                <li><a href="/analysis">Analysis</a></li>
+                <li><a href="/historical">Historical</a></li>
+            </ul>
+        </div>
+    </nav>
+
     <div class="container">
         <div class="header">
             <h1>🛰️ LoRaWAN Auditing Pipeline</h1>
@@ -29,7 +41,7 @@
             </div>
             <button id="connect-btn" class="btn">Connect to TTN</button>
             <button id="disconnect-btn" class="btn" style="display: none; background: #dc3545;">Disconnect</button>
-            <div style="margin-top: 10px;">
+            <div style="margin-top: 20px;">
                 Status: <span id="status-text" class="status-disconnected">Disconnected</span>
             </div>
             <button id="clear-credentials-btn" class="btn" style="display: none; background: #ffc107;">Clear Credentials</button>
