@@ -52,7 +52,11 @@ impl std::fmt::Debug for VectorDatabase {
 
 impl VectorDatabase {
     pub async fn new(collection_name: &str) -> Result<Self> {
-        let client = Qdrant::from_url("http://localhost:6334").build()?;
+        // Use environment variable for Qdrant URL, fallback to localhost for local development
+        let qdrant_url = std::env::var("QDRANT_URL")
+            .unwrap_or_else(|_| "http://localhost:6334".to_string());
+
+        let client = Qdrant::from_url(&qdrant_url).build()?;
 
         let db = Self {
             client,

@@ -9,6 +9,7 @@ services:
     environment:
       - RUST_LOG=info
       - BIND_ADDRESS=0.0.0.0:3000
+      - QDRANT_URL=http://qdrant:6334
     volumes:
       # Mount data files for persistence
       - ./data:/app/data
@@ -39,10 +40,10 @@ services:
       - lorawan-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "timeout", "5", "bash", "-c", "echo > /dev/tcp/localhost/6333 && echo > /dev/tcp/localhost/6334"]
+      interval: 5s
+      timeout: 15s
+      retries: 3
       start_period: 30s
 
   # Optional: Add a reverse proxy for production
