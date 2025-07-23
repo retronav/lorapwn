@@ -4,6 +4,7 @@ use tracing::{info, debug};
 use std::collections::HashMap;
 
 /// Main test function for the reinforcement learning pipeline
+#[tokio::test]
 pub async fn test_reinforcement_learning() -> Result<()> {
     info!("🤖 Starting Reinforcement Learning Pipeline Tests...");
 
@@ -67,6 +68,9 @@ async fn test_q_learning_algorithm() -> Result<()> {
         packet_loss_rate: 0.1,
         energy_consumption: 20.0,
         network_congestion: 0.2,
+        rssi: -90.0,
+        snr: 5.0,
+        device_battery_level: 0.8,
     };
 
     let state2 = NetworkState {
@@ -77,6 +81,9 @@ async fn test_q_learning_algorithm() -> Result<()> {
         packet_loss_rate: 0.05,
         energy_consumption: 25.0,
         network_congestion: 0.3,
+        rssi: -88.0,
+        snr: 5.5,
+        device_battery_level: 0.79,
     };
 
     let action = NetworkAction::IncreaseSF;
@@ -113,6 +120,9 @@ async fn test_network_state_management() -> Result<()> {
             packet_loss_rate: 0.05,
             energy_consumption: 15.0,
             network_congestion: 0.1,
+            rssi: -80.0,
+            snr: 8.0,
+            device_battery_level: 0.9,
         },
         NetworkState {
             spreading_factor: 12,
@@ -122,6 +132,9 @@ async fn test_network_state_management() -> Result<()> {
             packet_loss_rate: 0.4,
             energy_consumption: 95.0,
             network_congestion: 0.8,
+            rssi: -125.0,
+            snr: -10.0,
+            device_battery_level: 0.2,
         },
     ];
 
@@ -159,6 +172,9 @@ async fn test_action_selection() -> Result<()> {
         packet_loss_rate: 0.2,
         energy_consumption: 50.0,
         network_congestion: 0.4,
+        rssi: -100.0,
+        snr: 2.0,
+        device_battery_level: 0.6,
     };
 
     // Test action selection with empty Q-table (should return NoAction or random)
@@ -200,6 +216,9 @@ async fn test_environment_simulation() -> Result<()> {
         packet_loss_rate: 0.3,
         energy_consumption: 40.0,
         network_congestion: 0.5,
+        rssi: -110.0,
+        snr: -5.0,
+        device_battery_level: 0.7,
     };
 
     // Test different actions
@@ -356,9 +375,13 @@ mod tests {
             packet_loss_rate: 0.15,
             energy_consumption: 45.0,
             network_congestion: 0.6,
+            rssi: -95.0,
+            snr: 3.0,
+            device_battery_level: 0.85,
         };
 
         assert_eq!(state.spreading_factor, 9);
         assert_eq!(state.transmit_power, 15.0);
+        assert_eq!(state.rssi, -95.0);
     }
 }

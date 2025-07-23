@@ -13,6 +13,10 @@ pub struct NetworkState {
     pub packet_loss_rate: f32,
     pub energy_consumption: f32,
     pub network_congestion: f32,
+    // New fields based on your plan
+    pub rssi: f32,
+    pub snr: f32,
+    pub device_battery_level: f32, // 0.0 to 1.0
 }
 
 /// Action that can be taken to optimize the network
@@ -50,12 +54,13 @@ impl LoRaWanRLAgent {
     /// Get state key for Q-table lookup
     pub fn get_state_key(&self, state: &NetworkState) -> String {
         format!(
-            "SF:{}_TP:{:.1}_DR:{:.1}_CU:{:.2}_PLR:{:.2}",
+            "SF:{}_TP:{:.1}_PLR:{:.2}_RSSI:{:.1}_SNR:{:.1}_BATT:{:.2}",
             state.spreading_factor,
             state.transmit_power,
-            state.data_rate,
-            state.channel_utilization,
-            state.packet_loss_rate
+            state.packet_loss_rate,
+            state.rssi,
+            state.snr,
+            state.device_battery_level
         )
     }
 
@@ -169,6 +174,8 @@ impl LoRaWanRLAgent {
                     next_state.spreading_factor += 1;
                     next_state.packet_loss_rate *= 0.9; // Better reliability
                     next_state.energy_consumption *= 1.2; // Higher energy cost
+                    next_state.rssi *= 0.98; // Slight improvement
+                    next_state.snr += 0.5;
                     reward = 5.0 - (next_state.energy_consumption * 0.1);
                 }
             }
@@ -177,6 +184,8 @@ impl LoRaWanRLAgent {
                     next_state.spreading_factor -= 1;
                     next_state.packet_loss_rate *= 1.1; // Lower reliability
                     next_state.energy_consumption *= 0.8; // Lower energy cost
+                    next_state.rssi *= 1.02;
+                    next_state.snr -= 0.5;
                     reward = 3.0 - (next_state.packet_loss_rate * 10.0);
                 }
             }
@@ -185,6 +194,8 @@ impl LoRaWanRLAgent {
                     next_state.transmit_power += 1.0;
                     next_state.packet_loss_rate *= 0.95;
                     next_state.energy_consumption *= 1.1;
+                    next_state.rssi += 1.0;
+                    next_state.snr += 1.0;
                     reward = 2.0 - (next_state.energy_consumption * 0.05);
                 }
             }
@@ -193,6 +204,8 @@ impl LoRaWanRLAgent {
                     next_state.transmit_power -= 1.0;
                     next_state.packet_loss_rate *= 1.05;
                     next_state.energy_consumption *= 0.9;
+                    next_state.rssi -= 1.0;
+                    next_state.snr -= 1.0;
                     reward = 1.0 - (next_state.packet_loss_rate * 5.0);
                 }
             }
@@ -214,6 +227,8 @@ impl LoRaWanRLAgent {
         next_state.channel_utilization = next_state.channel_utilization.clamp(0.0, 1.0);
         next_state.network_congestion = next_state.network_congestion.clamp(0.0, 1.0);
         next_state.packet_loss_rate = next_state.packet_loss_rate.clamp(0.0, 1.0);
+        next_state.rssi = next_state.rssi.clamp(-140.0, -30.0);
+        next_state.snr = next_state.snr.clamp(-20.0, 10.0);
 
         Ok((next_state, reward))
     }
@@ -269,6 +284,9 @@ impl RLPipeline {
                 packet_loss_rate: (i as f32 * 0.01) % 0.5,
                 energy_consumption: 10.0 + (i as f32 * 0.5) % 50.0,
                 network_congestion: (i as f32 * 0.015) % 1.0,
+                rssi: -120.0 + (i as f32 * 1.5),
+                snr: -15.0 + (i as f32 * 0.5),
+                device_battery_level: (100.0 - (i as f32 * 0.5)).clamp(0.0, 100.0) / 100.0,
             };
             self.training_data.push(state);
         }
@@ -283,6 +301,9 @@ impl RLPipeline {
                 packet_loss_rate: (i as f32 * 0.02) % 0.3,
                 energy_consumption: 15.0 + (i as f32 * 0.8) % 40.0,
                 network_congestion: (i as f32 * 0.025) % 1.0,
+                rssi: -110.0 + (i as f32 * 2.0),
+                snr: -10.0 + (i as f32 * 0.7),
+                device_battery_level: (90.0 - (i as f32 * 1.0)).clamp(0.0, 100.0) / 100.0,
             };
             self.validation_data.push(state);
         }

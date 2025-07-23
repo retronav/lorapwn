@@ -7,6 +7,7 @@ mod test_rl;
 mod rl_pipeline;
 
 use crate::vector_db::{PacketLike, VectorDatabase, ClusteringResults, ClusteringConfig};
+use crate::rl_pipeline::{RLPipeline, NetworkState, NetworkAction, LoRaWanRLAgent};
 use uuid::Uuid;
 use axum::{
     extract::{Query, State},
@@ -680,6 +681,7 @@ pub struct AppState {
     pub vector_db: Arc<VectorDatabase>,
     pub clustering_results: Arc<RwLock<Option<ClusteringResults>>>,
     pub clustering_config: Arc<RwLock<ClusteringConfig>>,
+    pub rl_pipeline: Arc<RwLock<RLPipeline>>, // Add RL pipeline to app state
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -712,6 +714,7 @@ impl AppState {
             vector_db: Arc::new(VectorDatabase::new("lorawan_packets").await?),
             clustering_results: Arc::new(RwLock::new(None)),
             clustering_config: Arc::new(RwLock::new(ClusteringConfig::default())),
+            rl_pipeline: Arc::new(RwLock::new(RLPipeline::new())), // Initialize RL pipeline
         })
     }
 
@@ -824,6 +827,12 @@ pub async fn analysis_dashboard() -> Html<String> {
 pub async fn historical_dashboard() -> Html<String> {
     let html_content = fs::read_to_string("templates/historical.html")
         .unwrap_or_else(|_| "<h1>Error loading historical template</h1>".to_string());
+    Html(html_content)
+}
+
+pub async fn rl_dashboard() -> Html<String> {
+    let html_content = fs::read_to_string("templates/rl_dashboard.html")
+        .unwrap_or_else(|_| "<h1>Error loading RL dashboard template</h1>".to_string());
     Html(html_content)
 }
 
@@ -1186,6 +1195,303 @@ pub async fn update_clustering_config(
     }))
 }
 
+// ==============================================================================
+// 6. RL Pipeline API Handlers
+// ==============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct RLTrainingRequest {
+    pub episodes: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RLTrainingResponse {
+    pub status: String,
+    pub message: String,
+    pub episodes_trained: u32,
+    pub final_reward: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RLMetrics {
+    pub episodes_trained: u32,
+    pub q_table_size: usize,
+    pub avg_q_value: f32,
+    pub training_samples: usize,
+    pub validation_samples: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RLRecommendation {
+    pub device_id: String,
+    pub current_state: NetworkState,
+    pub recommended_action: NetworkAction,
+    pub expected_reward: f32,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub message: String,
+}
+
+impl axum::response::IntoResponse for ErrorResponse {
+    fn into_response(self) -> axum::response::Response {
+        let body = Json(self);
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+    }
+}
+
+pub async fn get_rl_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let rl_pipeline = state.rl_pipeline.read();
+    let metrics = rl_pipeline.get_pipeline_metrics();
+
+    Json(serde_json::json!({
+        "status": "ready",
+        "metrics": metrics,
+        "agent_info": {
+            "learning_rate": rl_pipeline.agent.learning_rate,
+            "discount_factor": rl_pipeline.agent.discount_factor,
+            "epsilon": rl_pipeline.agent.epsilon,
+            "episodes_trained": rl_pipeline.agent.episodes_trained
+        }
+    }))
+}
+
+pub async fn initialize_rl_pipeline(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    info!("🤖 Initializing RL pipeline with sample data...");
+
+    match state.rl_pipeline.write().initialize_with_sample_data() {
+        Ok(()) => {
+            info!("✅ RL pipeline initialized successfully");
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "initialized",
+                "message": "RL pipeline initialized with sample data"
+            })))
+        }
+        Err(e) => {
+            error!("❌ Failed to initialize RL pipeline: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Initialization failed: {}", e)
+            })))
+        }
+    }
+}
+
+pub async fn train_rl_agent(
+    State(state): State<AppState>,
+    Json(request): Json<RLTrainingRequest>,
+) -> impl axum::response::IntoResponse {
+    let episodes = request.episodes.unwrap_or(100);
+    info!("🚀 Starting RL agent training for {} episodes...", episodes);
+
+    match state.rl_pipeline.write().train(episodes).await {
+        Ok(()) => {
+            let rl_pipeline = state.rl_pipeline.read();
+            info!("✅ RL agent training completed successfully");
+
+            (StatusCode::OK, Json(RLTrainingResponse {
+                status: "completed".to_string(),
+                message: format!("Training completed for {} episodes", episodes),
+                episodes_trained: rl_pipeline.agent.episodes_trained,
+                final_reward: None,
+            }))
+        }
+        Err(e) => {
+            error!("❌ RL agent training failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(RLTrainingResponse {
+                status: "error".to_string(),
+                message: format!("Training failed: {}", e),
+                episodes_trained: 0,
+                final_reward: None,
+            }))
+        }
+    }
+}
+
+pub async fn validate_rl_agent(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    info!("🔍 Starting RL agent validation...");
+
+    match state.rl_pipeline.read().validate().await {
+        Ok(validation_metrics) => {
+            info!("✅ RL agent validation completed successfully");
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "completed",
+                "message": "Validation completed successfully",
+                "metrics": validation_metrics
+            })))
+        }
+        Err(e) => {
+            error!("❌ RL agent validation failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Validation failed: {}", e)
+            })))
+        }
+    }
+}
+
+pub async fn get_rl_recommendations(State(state): State<AppState>) -> Json<Vec<RLRecommendation>> {
+    let device_states = state.auditor.get_device_statistics();
+    let rl_pipeline = state.rl_pipeline.read();
+    let mut recommendations = Vec::new();
+
+    for (device_id, device_state) in device_states.iter().take(10) { // Limit to 10 devices
+        // Convert device state to network state for RL analysis
+        let network_state = convert_device_state_to_network_state(device_state);
+
+        // Get recommendation from RL agent
+        let recommended_action = rl_pipeline.agent.select_action(&network_state);
+
+        // Calculate expected reward (simplified)
+        let expected_reward = calculate_expected_reward(&network_state, recommended_action);
+
+        // Calculate confidence based on Q-value variance (simplified)
+        let confidence = calculate_action_confidence(&rl_pipeline.agent, &network_state);
+
+        recommendations.push(RLRecommendation {
+            device_id: device_id.clone(),
+            current_state: network_state,
+            recommended_action,
+            expected_reward,
+            confidence,
+        });
+    }
+
+    Json(recommendations)
+}
+
+pub async fn simulate_rl_action(
+    State(state): State<AppState>,
+    Json(request): Json<serde_json::Value>,
+) -> impl axum::response::IntoResponse {
+    // Extract network state and action from request
+    let network_state: NetworkState = match serde_json::from_value(
+        request.get("network_state").cloned().unwrap_or_default()
+    ) {
+        Ok(state) => state,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "status": "error",
+            "message": "Invalid network state format"
+        }))),
+    };
+
+    let action: NetworkAction = match serde_json::from_value(
+        request.get("action").cloned().unwrap_or_default()
+    ) {
+        Ok(action) => action,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "status": "error",
+            "message": "Invalid action format"
+        }))),
+    };
+
+    let rl_pipeline = state.rl_pipeline.read();
+
+    match rl_pipeline.agent.simulate_environment_step(&network_state, action) {
+        Ok((next_state, reward)) => {
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "success",
+                "initial_state": network_state,
+                "action": action,
+                "next_state": next_state,
+                "reward": reward,
+                "message": "Action simulation completed successfully"
+            })))
+        }
+        Err(e) => {
+            error!("❌ Action simulation failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Simulation failed: {}", e)
+            })))
+        }
+    }
+}
+
+// Helper functions for RL integration
+fn convert_device_state_to_network_state(device_state: &DeviceState) -> NetworkState {
+    NetworkState {
+        spreading_factor: 7, // Default SF, could be enhanced with actual data
+        transmit_power: 14.0, // Default power
+        data_rate: 5.0, // Default data rate
+        channel_utilization: 0.3, // Default utilization
+        packet_loss_rate: if device_state.packet_count > 0 {
+            (device_state.total_findings as f32 / device_state.packet_count as f32).min(1.0)
+        } else { 0.0 },
+        energy_consumption: 20.0, // Default energy consumption
+        network_congestion: 0.2, // Default congestion
+        rssi: device_state.avg_rssi.unwrap_or(-100.0) as f32,
+        snr: 5.0, // Default SNR, could be enhanced
+        device_battery_level: 0.8, // Default battery level
+    }
+}
+
+fn calculate_expected_reward(network_state: &NetworkState, action: NetworkAction) -> f32 {
+    // Simplified reward calculation based on current state and action
+    match action {
+        NetworkAction::IncreaseSF => {
+            if network_state.packet_loss_rate > 0.2 {
+                5.0 - (network_state.energy_consumption * 0.1)
+            } else {
+                -1.0
+            }
+        }
+        NetworkAction::DecreaseSF => {
+            if network_state.energy_consumption > 80.0 {
+                3.0
+            } else {
+                -2.0
+            }
+        }
+        NetworkAction::IncreasePower => {
+            if network_state.packet_loss_rate > 0.3 {
+                4.0 - (network_state.energy_consumption * 0.05)
+            } else {
+                -1.5
+            }
+        }
+        NetworkAction::DecreasePower => {
+            if network_state.energy_consumption > 90.0 {
+                2.0
+            } else {
+                -1.0
+            }
+        }
+        NetworkAction::ChangeChannel => {
+            if network_state.network_congestion > 0.7 {
+                4.0
+            } else {
+                -0.5
+            }
+        }
+        NetworkAction::NoAction => -0.1,
+    }
+}
+
+fn calculate_action_confidence(agent: &LoRaWanRLAgent, network_state: &NetworkState) -> f32 {
+    let state_key = agent.get_state_key(network_state);
+
+    if let Some(action_values) = agent.q_table.get(&state_key) {
+        if action_values.is_empty() {
+            return 0.0;
+        }
+
+        // Calculate confidence based on Q-value variance
+        let values: Vec<f32> = action_values.values().cloned().collect();
+        let max_value = *values.iter().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(&0.0);
+        let min_value = *values.iter().min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(&0.0);
+
+        // Higher confidence when there's a clear best action (high variance)
+        let variance = max_value - min_value;
+        (variance / 10.0).min(1.0).max(0.0)
+    } else {
+        0.0 // No confidence if state not seen before
+    }
+}
+
 // Helper functions for vector database queries
 async fn get_filtered_packets_from_vector_db(
     state: &AppState,
@@ -1302,6 +1608,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(dashboard))
         .route("/analysis", get(analysis_dashboard))
         .route("/historical", get(historical_dashboard))
+        .route("/rl-dashboard", get(rl_dashboard))
         .route("/health", get(health_check))
         .route("/api/packets", get(get_packets))
         .route("/api/statistics", get(get_statistics))
@@ -1316,6 +1623,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/clustering-analysis", get(get_clustering_analysis))
         .route("/api/trigger-clustering", post(trigger_clustering_analysis))
         .route("/api/clustering-config", post(update_clustering_config))
+        .route("/api/rl/status", get(get_rl_status))
+        .route("/api/rl/initialize", post(initialize_rl_pipeline))
+        .route("/api/rl/recommendations", get(get_rl_recommendations))
+        .route("/api/rl/simulate-action", post(simulate_rl_action))
         .nest_service("/static", ServeDir::new("static"))
         .with_state(app_state);
 
