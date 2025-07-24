@@ -244,12 +244,26 @@ impl LoRaWanRLAgent {
         metrics.insert("episodes_trained".to_string(), self.episodes_trained as f32);
         metrics.insert("q_table_size".to_string(), self.q_table.len() as f32);
 
-        let avg_q_value = self.q_table
-            .values()
-            .flat_map(|actions| actions.values())
-            .sum::<f32>() / self.q_table.values().map(|actions| actions.len()).sum::<usize>() as f32;
+        // Safely calculate average Q-value
+        let avg_q_value = if self.q_table.is_empty() {
+            0.0
+        } else {
+            let total_values: usize = self.q_table.values().map(|actions| actions.len()).sum();
+            if total_values == 0 {
+                0.0
+            } else {
+                let sum_q_values: f32 = self.q_table
+                    .values()
+                    .flat_map(|actions| actions.values())
+                    .sum();
+                sum_q_values / total_values as f32
+            }
+        };
 
-        metrics.insert("avg_q_value".to_string(), avg_q_value);
+        // Ensure avg_q_value is not NaN or infinite
+        let safe_avg_q_value = if avg_q_value.is_finite() { avg_q_value } else { 0.0 };
+        metrics.insert("avg_q_value".to_string(), safe_avg_q_value);
+
         metrics
     }
 }

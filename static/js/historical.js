@@ -4,13 +4,30 @@ let totalPages = 1;
 let currentFilters = {};
 let isTableView = true;
 let charts = {};
+let importJobsPollingInterval = null;
+let validatedCredentials = false;
 
 // Initialize the page
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('🚀 DOM Content Loaded - Starting initialization...');
+
+    // Add a simple test to verify DOM elements exist
+    console.log('Testing button existence:');
+    console.log('- validate-credentials:', !!document.getElementById('validate-credentials'));
+    console.log('- start-import:', !!document.getElementById('start-import'));
+    console.log('- toggle-advanced:', !!document.getElementById('toggle-advanced'));
+    console.log('- import-presets:', !!document.getElementById('import-presets'));
+    console.log('- refresh-jobs:', !!document.getElementById('refresh-jobs'));
+
     initializePage();
     setupEventListeners();
+    setupImportEventListeners(); // Add import event listeners
     loadDeviceList();
     setDefaultDateRange();
+    loadDatePresets(); // Load quick date presets
+    loadImportJobs(); // Load existing import jobs
+
+    console.log('✅ Initialization complete!');
 });
 
 function initializePage() {
@@ -633,4 +650,546 @@ function showNotification(message, type = 'info') {
             }
         }, 300);
     }, 4000);
+}
+
+// Import Jobs Section
+
+function setupImportEventListeners() {
+    console.log('Setting up import event listeners...');
+
+    // Import form controls
+    const validateBtn = document.getElementById('validate-files');
+    const previewBtn = document.getElementById('preview-files');
+    const startBtn = document.getElementById('start-import');
+    const toggleBtn = document.getElementById('toggle-examples');
+    const refreshBtn = document.getElementById('refresh-jobs');
+
+    if (validateBtn) {
+        validateBtn.addEventListener('click', validateImportFiles);
+        console.log('✅ Validate files button listener added');
+    } else {
+        console.error('❌ Validate files button not found');
+    }
+
+    if (previewBtn) {
+        previewBtn.addEventListener('click', previewImportFiles);
+        console.log('✅ Preview files button listener added');
+    } else {
+        console.error('❌ Preview files button not found');
+    }
+
+    if (startBtn) {
+        startBtn.addEventListener('click', startFileImport);
+        console.log('✅ Start import button listener added');
+    } else {
+        console.error('❌ Start import button not found');
+    }
+
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', toggleExamples);
+        console.log('✅ Toggle examples button listener added');
+    } else {
+        console.error('❌ Toggle examples button not found');
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', loadImportJobs);
+        console.log('✅ Refresh jobs button listener added');
+    } else {
+        console.error('❌ Refresh jobs button not found');
+    }
+}
+
+function toggleExamples() {
+    const content = document.getElementById('examples-content');
+    const button = document.getElementById('toggle-examples');
+
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        button.textContent = '📖 Hide Examples';
+    } else {
+        content.style.display = 'none';
+        button.textContent = '📖 File Format Examples';
+    }
+}
+
+async function validateImportFiles() {
+    const filePaths = document.getElementById('import-file-paths').value.trim();
+
+    if (!filePaths) {
+        showValidationStatus('Please enter at least one file path', 'error');
+        return;
+    }
+
+    const filePathsArray = filePaths.split('\n').map(path => path.trim()).filter(path => path);
+
+    showValidationStatus('Validating files...', 'info');
+
+    try {
+        const response = await fetch('/api/import/validate-credentials', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                application_id: 'json-import', // Placeholder
+                access_key: 'not-used',       // Placeholder
+                cluster: 'not-used',          // Placeholder
+                duration: '1d',               // Placeholder
+                device_ids: filePathsArray    // Pass file paths in device_ids field
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.valid) {
+            validatedCredentials = true;
+            document.getElementById('start-import').disabled = false;
+
+            const message = result.device_count
+                ? `✅ Valid files! Found ${result.device_count} devices from preview.`
+                : '✅ Valid files!';
+
+            showValidationStatus(message, 'success');
+
+            // Show available devices if provided
+            if (result.available_devices && result.available_devices.length > 0) {
+                showAvailableDevices(result.available_devices);
+            }
+        } else {
+            validatedCredentials = false;
+            document.getElementById('start-import').disabled = true;
+            showValidationStatus(`❌ ${result.message}`, 'error');
+        }
+    } catch (error) {
+        console.error('Validation error:', error);
+        validatedCredentials = false;
+        document.getElementById('start-import').disabled = true;
+        showValidationStatus('❌ File validation failed. Please check file paths and formats.', 'error');
+    }
+}
+
+async function previewImportFiles() {
+    const filePaths = document.getElementById('import-file-paths').value.trim();
+
+    if (!filePaths) {
+        showValidationStatus('Please enter at least one file path', 'error');
+        return;
+    }
+
+    const filePathsArray = filePaths.split('\n').map(path => path.trim()).filter(path => path);
+
+    try {
+        // For preview, we'll use the same validation endpoint but show more details
+        const response = await fetch('/api/import/validate-credentials', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                application_id: 'json-preview',
+                access_key: 'not-used',
+                cluster: 'not-used',
+                duration: '1d',
+                device_ids: filePathsArray
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.valid) {
+            // Show preview in modal or expand area
+            showPreviewModal(result);
+        } else {
+            showValidationStatus(`❌ Preview failed: ${result.message}`, 'error');
+        }
+    } catch (error) {
+        console.error('Preview error:', error);
+        showValidationStatus('❌ Preview failed. Please check file paths.', 'error');
+    }
+}
+
+function showPreviewModal(previewData) {
+    const modal = document.getElementById('packet-modal');
+    const modalBody = document.getElementById('packet-details');
+
+    modalBody.innerHTML = `
+        <div class="preview-content">
+            <h4>📋 File Preview</h4>
+            <div class="preview-stats">
+                <p><strong>Status:</strong> ${previewData.valid ? '✅ Valid' : '❌ Invalid'}</p>
+                <p><strong>Message:</strong> ${previewData.message}</p>
+                ${previewData.device_count ? `<p><strong>Devices Found:</strong> ${previewData.device_count}</p>` : ''}
+            </div>
+
+            ${previewData.available_devices && previewData.available_devices.length > 0 ? `
+                <div class="preview-devices">
+                    <h5>📱 Devices in Files:</h5>
+                    <div class="device-list">
+                        ${previewData.available_devices.slice(0, 10).map(device =>
+                            `<span class="device-tag">${device}</span>`
+                        ).join('')}
+                        ${previewData.available_devices.length > 10 ?
+                            `<span class="device-tag">... and ${previewData.available_devices.length - 10} more</span>` : ''}
+                    </div>
+                </div>
+            ` : ''}
+
+            <div class="preview-note">
+                <strong>📝 Note:</strong> This is a preview based on file validation.
+                Actual import may process different numbers of messages depending on filters and file content.
+            </div>
+        </div>
+    `;
+
+    modal.style.display = 'flex';
+}
+
+async function startFileImport() {
+    if (!validatedCredentials) {
+        showNotification('❌ Please validate files first', 'error');
+        return;
+    }
+
+    const filePaths = document.getElementById('import-file-paths').value.trim();
+    const deviceFilter = document.getElementById('import-device-filter').value.trim();
+    const batchSize = parseInt(document.getElementById('batch-size').value) || 500;
+
+    if (!filePaths) {
+        showNotification('❌ Please enter file paths', 'error');
+        return;
+    }
+
+    const filePathsArray = filePaths.split('\n').map(path => path.trim()).filter(path => path);
+    const deviceIds = deviceFilter ? deviceFilter.split(',').map(d => d.trim()).filter(d => d) : null;
+
+    const importRequest = {
+        application_id: 'json-import',
+        access_key: 'not-used',
+        cluster: 'not-used',
+        duration: '1d',
+        device_ids: filePathsArray, // Pass file paths
+        batch_size: batchSize,
+        rate_limit_delay_ms: 0 // Not needed for file import
+    };
+
+    try {
+        const response = await fetch('/api/import/start', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(importRequest)
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            showNotification(`🚀 Import job started! Job ID: ${result.job_id}`, 'success');
+
+            // Clear form
+            document.getElementById('import-file-paths').value = '';
+            document.getElementById('import-device-filter').value = '';
+            document.getElementById('start-import').disabled = true;
+            validatedCredentials = false;
+            showValidationStatus('', 'info');
+
+            // Refresh jobs list
+            await loadImportJobs();
+
+            // Start polling for job updates
+            startImportJobsPolling();
+
+        } else {
+            throw new Error(result.message || 'Failed to start import');
+        }
+    } catch (error) {
+        console.error('Import start error:', error);
+        showNotification(`❌ Failed to start import: ${error.message}`, 'error');
+    }
+}
+
+async function loadDatePresets() {
+    try {
+        const response = await fetch('/api/import/date-presets');
+        if (response.ok) {
+            const data = await response.json();
+            // For JSON file import, we don't need date presets
+            // but we can keep this function for future compatibility
+            console.log('Date presets loaded (not used in JSON import):', data);
+        }
+    } catch (error) {
+        console.error('Failed to load date presets:', error);
+    }
+}
+
+function handlePresetSelection() {
+    // Not needed for JSON file import, but keeping for compatibility
+    console.log('Preset selection not applicable for JSON file import');
+}
+
+function toggleAdvancedOptions() {
+    // Not needed for JSON file import, but keeping for compatibility
+    console.log('Advanced options not applicable for JSON file import');
+}
+
+async function validateImportCredentials() {
+    // This function is replaced by validateImportFiles
+    console.log('validateImportCredentials called - redirecting to validateImportFiles');
+    await validateImportFiles();
+}
+
+function showValidationStatus(message, type) {
+    const statusDiv = document.getElementById('validation-status');
+    if (!statusDiv) return;
+
+    statusDiv.className = `validation-status ${type}`;
+    statusDiv.textContent = message;
+
+    // Show for 5 seconds if it's a success or error message
+    if (type === 'success' || type === 'error') {
+        setTimeout(() => {
+            if (statusDiv.textContent === message) {
+                statusDiv.textContent = '';
+                statusDiv.className = 'validation-status';
+            }
+        }, 5000);
+    }
+}
+
+function showAvailableDevices(devices) {
+    const statusDiv = document.getElementById('validation-status');
+    if (!statusDiv || !devices || devices.length === 0) return;
+
+    const deviceList = devices.slice(0, 5).join(', ');
+    const moreText = devices.length > 5 ? ` and ${devices.length - 5} more` : '';
+
+    const currentMessage = statusDiv.textContent;
+    statusDiv.innerHTML = `
+        ${currentMessage}<br>
+        <small>📱 Devices found: ${deviceList}${moreText}</small>
+    `;
+}
+
+async function startHistoricalImport() {
+    // This function is replaced by startFileImport
+    console.log('startHistoricalImport called - redirecting to startFileImport');
+    await startFileImport();
+}
+
+async function loadImportJobs() {
+    try {
+        const response = await fetch('/api/import/jobs');
+        if (response.ok) {
+            const jobs = await response.json();
+            updateImportJobsDisplay(jobs);
+
+            // If there are active jobs, start polling
+            const hasActiveJobs = jobs.some(job =>
+                job.progress && (job.progress.status === 'Pending' || job.progress.status === 'InProgress')
+            );
+
+            if (hasActiveJobs) {
+                startImportJobsPolling();
+            } else {
+                stopImportJobsPolling();
+            }
+        }
+    } catch (error) {
+        console.error('Error loading import jobs:', error);
+        showNotification('⚠️ Failed to load import jobs', 'warning');
+    }
+}
+
+function updateImportJobsDisplay(jobs) {
+    const container = document.getElementById('jobs-container');
+
+    if (jobs.length === 0) {
+        container.innerHTML = '<p class="no-jobs">No import jobs running</p>';
+        return;
+    }
+
+    container.innerHTML = jobs.map(job => {
+        const progress = job.progress || job[1]; // Handle both formats
+        const jobId = job.job_id || job[0]; // Handle both formats
+
+        if (!progress) return '';
+
+        const progressPercent = progress.total_messages > 0
+            ? Math.round((progress.processed_messages / progress.total_messages) * 100)
+            : 0;
+
+        const statusClass = progress.status.toLowerCase().replace(/([A-Z])/g, '-$1').toLowerCase();
+
+        return `
+            <div class="job-card">
+                <div class="job-header">
+                    <span class="job-id">Job: ${jobId}</span>
+                    <span class="job-status ${statusClass}">${progress.status}</span>
+                </div>
+                <div class="job-body">
+                    <div class="job-info">
+                        <div class="job-info-item">
+                            <span class="job-info-label">Total Messages</span>
+                            <span class="job-info-value">${progress.total_messages}</span>
+                        </div>
+                        <div class="job-info-item">
+                            <span class="job-info-label">Processed</span>
+                            <span class="job-info-value">${progress.processed_messages}</span>
+                        </div>
+                        <div class="job-info-item">
+                            <span class="job-info-label">Imported</span>
+                            <span class="job-info-value">${progress.imported_messages}</span>
+                        </div>
+                        <div class="job-info-item">
+                            <span class="job-info-label">Failed</span>
+                            <span class="job-info-value">${progress.failed_messages}</span>
+                        </div>
+                        ${progress.current_file ? `
+                        <div class="job-info-item">
+                            <span class="job-info-label">Current File</span>
+                            <span class="job-info-value">${progress.current_file}</span>
+                        </div>
+                        ` : ''}
+                    </div>
+
+                    ${progress.status === 'InProgress' ? `
+                        <div class="progress-bar-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${progressPercent}%"></div>
+                            </div>
+                            <div class="progress-text">${progressPercent}% complete</div>
+                        </div>
+                    ` : ''}
+
+                    <div class="job-actions">
+                        ${progress.status === 'InProgress' ? `
+                            <button class="btn btn-danger" onclick="cancelImportJob('${jobId}')">
+                                Cancel Job
+                            </button>
+                        ` : ''}
+                        <button class="btn btn-info" onclick="viewJobDetails('${jobId}')">
+                            View Details
+                        </button>
+                    </div>
+
+                    ${progress.error_messages && progress.error_messages.length > 0 ? `
+                        <div class="error-messages">
+                            <strong>Errors:</strong>
+                            ${progress.error_messages.slice(0, 3).map(error =>
+                                `<div class="error-message">${error}</div>`
+                            ).join('')}
+                            ${progress.error_messages.length > 3 ?
+                                `<div class="error-message">... and ${progress.error_messages.length - 3} more errors</div>`
+                                : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function cancelImportJob(jobId) {
+    if (!confirm('Are you sure you want to cancel this import job?')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/import/cancel/${jobId}`, {
+            method: 'POST'
+        });
+
+        if (response.ok) {
+            showNotification('🛑 Import job cancelled', 'success');
+            await loadImportJobs();
+        } else {
+            throw new Error('Failed to cancel job');
+        }
+    } catch (error) {
+        console.error('Error cancelling job:', error);
+        showNotification('❌ Failed to cancel job', 'error');
+    }
+}
+
+async function viewJobDetails(jobId) {
+    try {
+        const response = await fetch(`/api/import/progress/${jobId}`);
+        if (response.ok) {
+            const jobData = await response.json();
+            showJobDetailsModal(jobData);
+        } else {
+            throw new Error('Failed to fetch job details');
+        }
+    } catch (error) {
+        console.error('Error loading job details:', error);
+        showNotification('❌ Failed to load job details', 'error');
+    }
+}
+
+function showJobDetailsModal(jobData) {
+    const modal = document.getElementById('packet-modal');
+    const modalBody = document.getElementById('packet-details');
+
+    const progress = jobData.progress;
+    const startTime = new Date(progress.start_time).toLocaleString();
+    const estimatedCompletion = progress.estimated_completion
+        ? new Date(progress.estimated_completion).toLocaleString()
+        : 'Unknown';
+
+    modalBody.innerHTML = `
+        <div class="job-details">
+            <h4>📊 Import Job Details</h4>
+            <div class="detail-section">
+                <p><strong>Job ID:</strong> ${jobData.job_id}</p>
+                <p><strong>Status:</strong> <span class="job-status ${progress.status.toLowerCase()}">${progress.status}</span></p>
+                <p><strong>Started:</strong> ${startTime}</p>
+                <p><strong>Estimated Completion:</strong> ${estimatedCompletion}</p>
+                ${progress.current_file ? `<p><strong>Current File:</strong> ${progress.current_file}</p>` : ''}
+            </div>
+
+            <h4>📈 Progress Statistics</h4>
+            <div class="detail-section">
+                <p><strong>Total Messages:</strong> ${progress.total_messages}</p>
+                <p><strong>Processed:</strong> ${progress.processed_messages}</p>
+                <p><strong>Successfully Imported:</strong> ${progress.imported_messages}</p>
+                <p><strong>Failed:</strong> ${progress.failed_messages}</p>
+            </div>
+
+            ${progress.error_messages && progress.error_messages.length > 0 ? `
+                <h4>❌ Error Messages</h4>
+                <div class="detail-section">
+                    <div class="error-messages" style="max-height: 200px; overflow-y: auto;">
+                        ${progress.error_messages.map(error =>
+                            `<div class="error-message">${error}</div>`
+                        ).join('')}
+                    </div>
+                </div>
+            ` : ''}
+
+            <h4>🔧 Raw Job Data</h4>
+            <div class="detail-section">
+                <pre class="payload-json">${JSON.stringify(progress, null, 2)}</pre>
+            </div>
+        </div>
+    `;
+
+    modal.style.display = 'flex';
+}
+
+function startImportJobsPolling() {
+    if (importJobsPollingInterval) {
+        clearInterval(importJobsPollingInterval);
+    }
+
+    importJobsPollingInterval = setInterval(async () => {
+        await loadImportJobs();
+    }, 3000); // Poll every 3 seconds
+}
+
+function stopImportJobsPolling() {
+    if (importJobsPollingInterval) {
+        clearInterval(importJobsPollingInterval);
+        importJobsPollingInterval = null;
+    }
 }

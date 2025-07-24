@@ -72,6 +72,100 @@
             </div>
         </div>
 
+        <!-- File Upload Section -->
+        <div class="upload-section">
+            <h3>📁 File Upload & Management</h3>
+            <div class="upload-grid">
+                <div class="upload-item">
+                    <h4>Training Data</h4>
+                    <p>Upload LoRaWAN packet data for training (JSON, CSV)</p>
+                    <div class="file-input-container">
+                        <input type="file" id="training-data-upload" accept=".json,.csv,.txt" multiple>
+                        <label for="training-data-upload" class="file-input-label">
+                            📊 Choose Training Files
+                        </label>
+                    </div>
+                    <div id="training-files-list" class="file-list"></div>
+                    <button id="upload-training-btn" class="btn btn-primary" disabled>📤 Upload Training Data</button>
+                </div>
+
+                <div class="upload-item">
+                    <h4>Pre-trained Model</h4>
+                    <p>Upload existing RL model or Q-table (JSON, PKL)</p>
+                    <div class="file-input-container">
+                        <input type="file" id="model-upload" accept=".json,.pkl,.bin,.pt">
+                        <label for="model-upload" class="file-input-label">
+                            🧠 Choose Model File
+                        </label>
+                    </div>
+                    <div id="model-file-info" class="file-info"></div>
+                    <button id="upload-model-btn" class="btn btn-primary" disabled>📥 Load Model</button>
+                </div>
+
+                <div class="upload-item">
+                    <h4>Configuration</h4>
+                    <p>Upload RL agent configuration (JSON, YAML)</p>
+                    <div class="file-input-container">
+                        <input type="file" id="config-upload" accept=".json,.yaml,.yml,.toml">
+                        <label for="config-upload" class="file-input-label">
+                            ⚙️ Choose Config File
+                        </label>
+                    </div>
+                    <div id="config-file-info" class="file-info"></div>
+                    <button id="upload-config-btn" class="btn btn-primary" disabled>⚙️ Apply Config</button>
+                </div>
+
+                <div class="upload-item">
+                    <h4>Export Data</h4>
+                    <p>Download trained models and results</p>
+                    <div class="export-buttons">
+                        <button id="export-model-btn" class="btn btn-secondary">💾 Export Model</button>
+                        <button id="export-qtable-btn" class="btn btn-secondary">📋 Export Q-Table</button>
+                        <button id="export-logs-btn" class="btn btn-secondary">📄 Export Logs</button>
+                        <button id="export-metrics-btn" class="btn btn-secondary">📈 Export Metrics</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Progress -->
+            <div class="upload-progress" id="upload-progress" style="display: none;">
+                <div class="upload-progress-bar">
+                    <div id="upload-progress-fill" class="upload-progress-fill"></div>
+                </div>
+                <div class="upload-status">
+                    <span id="upload-status-text">Uploading...</span>
+                    <span id="upload-percentage">0%</span>
+                </div>
+            </div>
+
+            <!-- File Management -->
+            <div class="file-management">
+                <h4>📂 Uploaded Files</h4>
+                <div id="uploaded-files-container" class="uploaded-files">
+                    <div class="file-categories">
+                        <div class="file-category">
+                            <h5>Training Data</h5>
+                            <div id="uploaded-training-files" class="file-items">
+                                <p class="no-files">No training files uploaded</p>
+                            </div>
+                        </div>
+                        <div class="file-category">
+                            <h5>Models</h5>
+                            <div id="uploaded-model-files" class="file-items">
+                                <p class="no-files">No model files uploaded</p>
+                            </div>
+                        </div>
+                        <div class="file-category">
+                            <h5>Configurations</h5>
+                            <div id="uploaded-config-files" class="file-items">
+                                <p class="no-files">No config files uploaded</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Recommendations Section -->
         <div class="recommendations-section">
             <div class="section-header">

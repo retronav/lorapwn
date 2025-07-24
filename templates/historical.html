@@ -33,6 +33,105 @@
             <a href="/historical" class="nav-link active">📊 Historical Data</a>
         </div>
 
+        <!-- Historical Data Import Section -->
+        <div class="import-section">
+            <div class="import-header">
+                <h3>📥 Import Historical Data from JSON Files</h3>
+                <p>Import historical packet data from JSON file exports (TTN Storage API exports, custom datasets)</p>
+            </div>
+
+            <!-- Import Configuration Panel -->
+            <div class="import-config-panel">
+                <div class="config-grid">
+                    <div class="form-group">
+                        <label for="import-file-paths">JSON File Paths</label>
+                        <textarea id="import-file-paths" rows="3" placeholder="lorawan_dataset.json&#10;raw_data.json&#10;/path/to/export.json"></textarea>
+                        <small>One file path per line. Supports JSON arrays, single objects, and JSONL format.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="import-format">Expected Format</label>
+                        <select id="import-format">
+                            <option value="auto">Auto-detect</option>
+                            <option value="json-array">JSON Array</option>
+                            <option value="single-object">Single JSON Object</option>
+                            <option value="jsonl">JSONL (JSON Lines)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="import-device-filter">Device ID Filter (optional)</label>
+                        <input type="text" id="import-device-filter" placeholder="device-1,device-2,device-3">
+                        <small>Comma-separated device IDs to import, or leave empty for all</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="batch-size">Batch Size</label>
+                        <input type="number" id="batch-size" value="500" min="100" max="1000">
+                        <small>Number of messages to process in each batch</small>
+                    </div>
+                </div>
+
+                <!-- File Format Examples -->
+                <div class="format-examples">
+                    <button type="button" class="btn btn-link" id="toggle-examples">
+                        📖 File Format Examples
+                    </button>
+                    <div class="examples-content" id="examples-content" style="display: none;">
+                        <h4>Supported JSON Formats:</h4>
+
+                        <h5>1. JSON Array Format:</h5>
+                        <pre><code>[
+  {
+    "end_device_ids": { "device_id": "my-device" },
+    "uplink_message": { "f_cnt": 123, "rssi": -85 },
+    "received_at": "2025-07-24T10:00:00Z"
+  },
+  { ... more messages ... }
+]</code></pre>
+
+                        <h5>2. JSONL Format (one JSON object per line):</h5>
+                        <pre><code>{"end_device_ids": {"device_id": "device-1"}, "uplink_message": {...}}
+{"end_device_ids": {"device_id": "device-2"}, "uplink_message": {...}}</code></pre>
+
+                        <h5>3. Single JSON Object:</h5>
+                        <pre><code>{
+  "end_device_ids": { "device_id": "my-device" },
+  "uplink_message": { "f_cnt": 123, "rssi": -85 },
+  "received_at": "2025-07-24T10:00:00Z"
+}</code></pre>
+
+                        <div class="format-note">
+                            <strong>📝 Note:</strong> JSON files should contain TTN message objects with standard TTN v3 format.
+                            The system will auto-detect the format and parse accordingly.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Import Actions -->
+                <div class="import-actions">
+                    <button id="validate-files" class="btn btn-secondary">
+                        🔍 Validate Files
+                    </button>
+                    <button id="preview-files" class="btn btn-info">
+                        👁️ Preview Content
+                    </button>
+                    <button id="start-import" class="btn btn-primary" disabled>
+                        🚀 Start Import
+                    </button>
+                    <div class="validation-status" id="validation-status"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Import Jobs Status -->
+        <div class="import-jobs-section">
+            <div class="jobs-header">
+                <h3>🔄 Import Jobs</h3>
+                <button id="refresh-jobs" class="btn btn-secondary">Refresh</button>
+            </div>
+            <div class="jobs-container" id="jobs-container">
+                <p class="no-jobs">No import jobs running</p>
+            </div>
+        </div>
+
         <!-- Filter Panel -->
         <div class="filter-panel">
             <h3>🔍 Data Filters</h3>
