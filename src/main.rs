@@ -1,190 +1,110 @@
-//! STM32F303RE Embedded AEAD Crypto Benchmarks
-//! Uses DWT_CYCCNT for precise cycle counting and energy measurement
+//! STM32 Embedded Crypto Benchmark Main Application
 //! Copyright (c) 2025 - HimuCodes
-//! Last updated: 2025-07-22
+//! Enhanced version with 100 iterations, power analysis, and detailed statistics
 
 #![no_std]
 #![no_main]
 
+extern crate alloc;
 use alloc_cortex_m::CortexMHeap;
-use cortex_m::peripheral::{DWT, DCB};
 use cortex_m_rt::entry;
 use cortex_m_semihosting::hprintln;
-use lorapwn::embedded_benchmark::{EmbeddedBenchmark, EmbeddedBenchmarkConfig};
-use panic_halt as _; // panic handler
-use stm32f3xx_hal::{prelude::*, pac};
+use panic_halt as _;
 
-extern crate alloc;
+// Import STM32F3 device for interrupt vectors
+use stm32f3xx_hal as hal;
+use hal::pac;
 
-// Global allocator for no_std Vec usage
+use lorapwn_bench::embedded_benchmark::{EmbeddedBenchmark, EmbeddedBenchmarkConfig};
+
+// Global allocator for Vec and other allocations
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-// Define the heap size (adjust as needed)
-const HEAP_SIZE: usize = 4096; // 4KB heap for crypto operations
+const HEAP_SIZE: usize = 1024 * 8; // 8KB heap
 
 #[entry]
 fn main() -> ! {
-    // Initialize the allocator
+    // Initialize the allocator with proper static handling
     {
         use core::mem::MaybeUninit;
-        static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { ALLOCATOR.init(HEAP.as_ptr() as usize, HEAP_SIZE) }
+        const HEAP_SIZE_USIZE: usize = HEAP_SIZE;
+        static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE_USIZE] = [MaybeUninit::uninit(); HEAP_SIZE_USIZE];
+        unsafe {
+            let heap_ptr = HEAP.as_mut_ptr() as *mut u8;
+            ALLOCATOR.init(heap_ptr as usize, HEAP_SIZE)
+        }
     }
 
-    let _ = hprintln!("Starting LoraPwn AEAD Benchmark...");
-    let _ = hprintln!("Date: 2025-07-22");
-    let _ = hprintln!("User: HimuCodes");
+    // Take ownership of device peripherals
+    let _dp = pac::Peripherals::take().unwrap();
+    let _cp = cortex_m::Peripherals::take().unwrap();
 
-    // Initialize the STM32F303RE peripherals
-    let dp = pac::Peripherals::take().unwrap();
-    let cp = cortex_m::Peripherals::take().unwrap();
-    let mut rcc = dp.RCC.constrain();
-    let mut flash = dp.FLASH.constrain();
+    let _ = hprintln!("🚀 STM32 Embedded Crypto Benchmark Suite");
+    let _ = hprintln!("==========================================");
+    let _ = hprintln!("Enhanced version with detailed power analysis");
+    let _ = hprintln!("Copyright (c) 2025 - HimuCodes");
+    let _ = hprintln!("");
 
-    // Configure clocks for STM32F303RE (up to 72 MHz)
-    let clocks = rcc.cfgr
-        .sysclk(72.MHz())
-        .pclk1(36.MHz())
-        .pclk2(72.MHz())
-        .freeze(&mut flash.acr);
-
-    // Configure the benchmarking parameters
+    // Configure benchmark for STM32F303RE (your specific MCU)
     let config = EmbeddedBenchmarkConfig {
-        cpu_freq_hz: clocks.sysclk().0,
-        cpu_power_ma: 12.0,              // STM32F303RE typical active current at 72MHz
-        voltage_v: 3.3,                  // 3.3V from Nucleo board
+        cpu_freq_hz: 72_000_000,  // 72 MHz (can run up to 72MHz)
+        cpu_power_ma: 42.0,       // Typical active current for STM32F303RE at 72MHz
+        voltage_v: 3.3,           // Supply voltage
+        target_name: "STM32F303RE",
     };
 
-    // Initialize the DWT cycle counter
-    init_dwt_counter(cp.DCB, cp.DWT);
+    let mut benchmark = EmbeddedBenchmark::new(config);
 
-    // Create the benchmark instance
-    let benchmark = EmbeddedBenchmark::new(config);
+    // Set to 100 iterations for detailed statistics
+    benchmark.set_iterations(100);
 
-    let _ = hprintln!("=== STM32F303RE AEAD Crypto Benchmarks ===");
-    let _ = hprintln!("CPU Frequency: {} Hz ({} MHz)", benchmark.config.cpu_freq_hz, benchmark.config.cpu_freq_hz / 1_000_000);
-    let _ = hprintln!("Estimated Power: {:.1} mA @ {:.1}V", benchmark.config.cpu_power_ma, benchmark.config.voltage_v);
+    let _ = hprintln!("🔧 Initializing benchmark suite...");
+    let _ = hprintln!("   Target: {} (512KB Flash, 64KB RAM)", benchmark.config.target_name);
+    let _ = hprintln!("   CPU Frequency: {} MHz", benchmark.config.cpu_freq_hz / 1_000_000);
+    let _ = hprintln!("   Supply Voltage: {:.1} V", benchmark.config.voltage_v);
+    let _ = hprintln!("   CPU Current: {:.1} mA", benchmark.config.cpu_power_ma);
+    let _ = hprintln!("   Total Power: {:.1} mW", benchmark.config.voltage_v * benchmark.config.cpu_power_ma);
+    let _ = hprintln!("   Iterations per test: 100");
     let _ = hprintln!("");
 
-    // Test different payload sizes typical for LoRaWAN
-    let sizes = [8, 16, 32, 64, 128];
-    let iterations = 10; // Multiple iterations for averaging
+    let _ = hprintln!("🔧 Initializing DWT cycle counter...");
 
-    // Add a warm-up period to stabilize temperature
-    let _ = hprintln!("Warming up CPU...");
-    for _ in 0..50 {
-        let _ = benchmark.benchmark_aes_ctr_cmac(32);
-        let _ = benchmark.benchmark_chacha20_poly1305(32);
-    }
-    let _ = hprintln!("Warm-up complete");
+    // Initialize DWT cycle counter
+    benchmark.init_cycle_counter();
 
-    let _ = hprintln!("Running {} iterations per test for accuracy...", iterations);
+    let _ = hprintln!("✅ DWT cycle counter initialized successfully");
     let _ = hprintln!("");
 
-    for &size in &sizes {
-        let _ = hprintln!("--- Testing {} byte payloads ---", size);
+    // Test different payload sizes (typical LoRaWAN packet sizes)
+    let payload_sizes = [16, 32, 64, 128, 242]; // LoRaWAN max payload is 242 bytes
 
-        // Benchmark AES-128-CTR + CMAC (traditional LoRaWAN)
-        let mut aes_total_cycles = 0u64;
-        for _ in 0..iterations {
-            // Disable interrupts during measurement for accuracy
-            cortex_m::interrupt::free(|_| {
-                let result = benchmark.benchmark_aes_ctr_cmac(size);
-                aes_total_cycles += result.cycles as u64;
-            });
-        }
-        let aes_avg_cycles = (aes_total_cycles / iterations as u64) as u32;
-        let aes_time_us = benchmark.cycles_to_us(aes_avg_cycles);
-        let aes_energy_uj = benchmark.time_to_energy(aes_time_us);
+    let _ = hprintln!("🚀 Starting benchmark execution...");
 
-        let _ = hprintln!("AES-128-CTR+CMAC:");
-        let _ = hprintln!("  Cycles: {} (avg)", aes_avg_cycles);
-        let _ = hprintln!("  Time: {:.2} µs", aes_time_us);
-        let _ = hprintln!("  Energy: {:.2} µJ", aes_energy_uj);
+    // Run comprehensive benchmark suite
+    benchmark.run_all_benchmarks(&payload_sizes);
 
-        // Benchmark ChaCha20-Poly1305 (modern AEAD)
-        let mut chacha_total_cycles = 0u64;
-        for _ in 0..iterations {
-            // Disable interrupts during measurement for accuracy
-            cortex_m::interrupt::free(|_| {
-                let result = benchmark.benchmark_chacha20_poly1305(size);
-                chacha_total_cycles += result.cycles as u64;
-            });
-        }
-        let chacha_avg_cycles = (chacha_total_cycles / iterations as u64) as u32;
-        let chacha_time_us = benchmark.cycles_to_us(chacha_avg_cycles);
-        let chacha_energy_uj = benchmark.time_to_energy(chacha_time_us);
-
-        let _ = hprintln!("ChaCha20-Poly1305:");
-        let _ = hprintln!("  Cycles: {} (avg)", chacha_avg_cycles);
-        let _ = hprintln!("  Time: {:.2} µs", chacha_time_us);
-        let _ = hprintln!("  Energy: {:.2} µJ", chacha_energy_uj);
-
-        // Performance comparison
-        let speedup = aes_avg_cycles as f32 / chacha_avg_cycles as f32;
-        let energy_ratio = aes_energy_uj / chacha_energy_uj;
-
-        let _ = hprintln!("Performance Comparison:");
-        if speedup > 1.0 {
-            let _ = hprintln!("  ChaCha20 is {:.2}x faster than AES", speedup);
-        } else {
-            let _ = hprintln!("  AES is {:.2}x faster than ChaCha20", 1.0 / speedup);
-        }
-
-        if energy_ratio > 1.0 {
-            let _ = hprintln!("  ChaCha20 uses {:.2}x less energy", energy_ratio);
-        } else {
-            let _ = hprintln!("  AES uses {:.2}x less energy", 1.0 / energy_ratio);
-        }
-        let _ = hprintln!("");
-    }
-
-    // Cache effects analysis
-    let _ = hprintln!("--- Cache Effects Analysis ---");
-
-    // Cold cache run (first execution after a delay)
-    cortex_m::asm::delay(1_000_000); // Force cache flush with delay
-    let cold_result = cortex_m::interrupt::free(|_| benchmark.benchmark_aes_ctr_cmac(64));
-
-    // Hot cache run (immediate second execution)
-    let hot_result = cortex_m::interrupt::free(|_| benchmark.benchmark_aes_ctr_cmac(64));
-
-    let _ = hprintln!("Cold cache: {} cycles", cold_result.cycles);
-    let _ = hprintln!("Hot cache: {} cycles", hot_result.cycles);
-    let _ = hprintln!("Cache impact: {:.2}%",
-              100.0 * (1.0 - (hot_result.cycles as f32 / cold_result.cycles as f32)));
-
+    let _ = hprintln!("🎯 Benchmark suite completed successfully!");
+    let _ = hprintln!("📊 Key findings summary:");
+    let _ = hprintln!("   • All tests ran with 100 iterations for statistical accuracy");
+    let _ = hprintln!("   • Power consumption calculated in milliwatts (mW) and watts (W)");
+    let _ = hprintln!("   • Energy consumption shown in microjoules (µJ), millijoules (mJ), and joules (J)");
+    let _ = hprintln!("   • Energy per byte shown in nanojoules per byte (nJ/byte)");
+    let _ = hprintln!("   • Throughput measured in megabits per second (Mbps)");
+    let _ = hprintln!("   • Efficiency score combines throughput and energy efficiency");
     let _ = hprintln!("");
-    let _ = hprintln!("=== Benchmark Complete ===");
-    let _ = hprintln!("LoraPwn AEAD benchmark by HimuCodes");
-    let _ = hprintln!("STM32F303RE @ {} MHz", benchmark.config.cpu_freq_hz / 1_000_000);
+    let _ = hprintln!("🔍 Power & Energy Units Explanation:");
+    let _ = hprintln!("   • mW (milliwatts) = Power consumption during operation");
+    let _ = hprintln!("   • W (watts) = Power consumption in standard SI units");
+    let _ = hprintln!("   • µJ (microjoules) = Energy consumed per operation");
+    let _ = hprintln!("   • mJ (millijoules) = Energy in larger scale");
+    let _ = hprintln!("   • J (joules) = Energy in standard SI units");
+    let _ = hprintln!("   • nJ/byte = Energy efficiency per byte processed");
+    let _ = hprintln!("   • Peak Power = Maximum instantaneous power (fastest execution)");
+    let _ = hprintln!("   • Average Power = Typical power consumption across all iterations");
 
-    // Enter low power mode
     loop {
-        cortex_m::asm::wfi(); // Wait for interrupt (low power mode)
-    }
-}
-
-/// Initialize the DWT cycle counter for precise timing
-fn init_dwt_counter(mut dcb: DCB, dwt: DWT) {
-    // Enable trace and debug
-    dcb.enable_trace();
-
-    // Set TRCENA bit in DEMCR register to enable DWT
-    unsafe {
-        // Set TRCENA bit
-        core::ptr::write_volatile(
-            0xE000EDFC as *mut u32,
-            core::ptr::read_volatile(0xE000EDFC as *const u32) | 0x01000000
-        );
-    }
-
-    // Enable and reset cycle counter
-    unsafe {
-        // Reset counter to 0
-        dwt.cyccnt.write(0);
-        // Enable counter
-        dwt.ctrl.modify(|r| r | 1);
+        // Keep the program running for semihosting output
+        cortex_m::asm::wfi();
     }
 }
