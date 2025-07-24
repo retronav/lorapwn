@@ -195,8 +195,8 @@ cargo build --release
 | Stage | ChaCha20 Description | AES Description |
 |-------|---------------------|-----------------|
 | `initial-state` | Initial ChaCha20 state matrix | Initial AES state (plaintext ⊕ key) |
-| `quarter-round1` | State after first quarter-round | State after first AES round |
-| `round1` | State after 4 quarter-rounds | State after 4 AES rounds |
+| `first-round` | State after first quarter-round | State after first AES round |
+| `round4` | State after 4 quarter-rounds | State after 4 AES rounds |
 | `round10` | State after 10 rounds (half) | State after 10 AES rounds |
 | `final-state` | Final state after 20 rounds | Final AES state |
 | `final-ciphertext` | Final ciphertext output | Final AES-CTR ciphertext |
@@ -227,17 +227,20 @@ The included Python script (`test_sca.py`) implements machine learning-based sid
 ### Usage
 
 ```bash
-# Run side-channel analysis on ChaCha20-Poly1305
-python test_sca.py --crypto aead
+# Analyze the 'first-round' stage (default) with caching enabled
+python test_sca.py --use-cache
 
-# Run side-channel analysis on AES-CTR
-python test_sca.py --crypto aes
+# Analyze a specific stage for both crypto implementations
+python test_sca.py --stage final-state
 
-# Run comparative analysis on both algorithms
-python test_sca.py --crypto both
+# Analyze all stages for both crypto implementations
+python test_sca.py --stage all --use-cache
 
-# Use cached traces for faster reruns
-python test_sca.py --crypto aead --use-cache
+# Analyze only the AES implementation for the 'round4' stage
+python test_sca.py --stage round4 --crypto aes
+
+# Analyze only the AEAD (ChaCha20) implementation for all stages
+python test_sca.py --stage all --crypto aead
 ```
 
 ### Configuration

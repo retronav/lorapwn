@@ -14,8 +14,8 @@ RUST_EXECUTABLE_PATH = "./target/release/lorapwn"
 # All cryptographic stages from the CLI to be tested
 STAGES_TO_TEST = [
     "initial-state",
-    "quarter-round1",
-    "round1",
+    "first-round",
+    "round4",
     "round10",
     "final-state",
     "final-ciphertext",
@@ -292,6 +292,10 @@ def perform_multiple_attacks(model, stage, correct_key_byte_val, num_runs=NUM_IN
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Side-channel analysis script for LoRaWAN.")
     parser.add_argument("--use-cache", action="store_true", help="Use cached traces if available to speed up reruns.")
+    parser.add_argument("--stage", choices=["all"] + STAGES_TO_TEST, default="first-round",
+                        help="Stage to analyze (default: first-round).")
+    parser.add_argument("--crypto", choices=["aead", "aes", "both"], default="both",
+                        help="Cryptographic algorithm to analyze (default: both).")
     args = parser.parse_args()
 
     if not (os.path.exists(RUST_EXECUTABLE_PATH) and os.access(RUST_EXECUTABLE_PATH, os.X_OK)):
@@ -301,7 +305,8 @@ if __name__ == "__main__":
         # This should be the first byte of the fixed key compiled into your Rust binary.
         CORRECT_KEY_BYTE_0 = 0x2B
 
-        for stage in STAGES_TO_TEST:
+        stages_to_analyze = STAGES_TO_TEST if args.stage == "all" else [args.stage]
+        for stage in stages_to_analyze:
             print("-" * 50)
             print(f"🚀 Starting Analysis for Stage: {stage}")
             print("-" * 50)
